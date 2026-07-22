@@ -1,0 +1,50 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# Secret & Environment Files
+.env
+*.env
+!.env.example
+
+# Python Cache & Build Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database & SQLite files
+*.db
+*.sqlite3
+copilot.db
+
+# Generated Resumes & Artifacts
+career_copilot/generated_resumes/
+generated_resumes/
+career_copilot/screenshots/
+screenshots/
+*.log
+
+# IDE and OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
