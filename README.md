@@ -227,7 +227,7 @@ result = run_browser_application(
     title='Python Developer',
     company='Acme Corp',
     description='We are looking for a Python developer...',
-    apply_url='https://jobs.lever.co/acme/12345'
+    apply_url='https://careers.hpe.com/us/en/job/1209483/Software-Engineer'
 )
 print(result)
 "
