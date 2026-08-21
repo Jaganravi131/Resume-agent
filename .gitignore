@@ -30,11 +30,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # Database & SQLite files
 *.db
 *.sqlite3
 copilot.db
+.adk/
 
 # Generated Resumes & Artifacts
 career_copilot/generated_resumes/
@@ -48,3 +50,4 @@ screenshots/
 .idea/
 .DS_Store
 Thumbs.db
+
