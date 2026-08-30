@@ -393,10 +393,10 @@ def _search_ddg_job_boards(query: str) -> list[dict]:
     return results
 
 
-def search_job_postings(query: str) -> list[dict]:
+def search_job_postings(query: str, max_results: int = 10) -> list[dict]:
     """Return live job postings with real apply URLs from public sources.
 
-    Returns a list of up to 10 jobs, or an empty list with a logged warning
+    Returns a list of up to max_results jobs, or an empty list with a logged warning
     if all providers failed.
     """
     print(f"[Tool] Searching job postings for query: '{query}'")
@@ -454,7 +454,7 @@ def search_job_postings(query: str) -> list[dict]:
 
     # Sort all matched candidates by their query matching score
     candidates.sort(key=lambda item: item.get("_search_score", 0), reverse=True)
-    return candidates[:10]
+    return candidates[:max_results]
 
 
 def store_scouted_job(title: str, company: str, location: str, url: str, description: str) -> str:
