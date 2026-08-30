@@ -2,7 +2,7 @@
 
 An agentic multi-agent system built with [Google ADK](https://google.github.io/adk-docs/) that automates your entire job search pipeline: scouting jobs from live APIs, scoring relevance with TF-IDF, tailoring resumes with Gemini, filling application forms via browser automation, and sending daily digests to Telegram/WhatsApp/Email.
 
-> 🌐 **Interactive Web App & Showcase UI**: Launch live with `streamlit run career_copilot/app.py` for interactive job scouting, ATS resume scoring, tailoring, and interview prep!
+> 🌐 **Interactive Web App & Showcase UI**: Launch live with `python -m streamlit run career_copilot/app.py` for interactive job scouting, ATS resume scoring, tailoring, and interview prep!
 
 ---
 
