@@ -160,7 +160,8 @@ with tab_arch:
     if st.button("🚀 Run Live Pipeline (Search → Score → Digest)"):
         with st.spinner("Running multi-agent execution pipeline..."):
             digest = build_daily_digest(query="Python Developer")
-            st.success(f"Pipeline executed successfully! Scouted {digest['scouted_count']} jobs. Generated {len(digest['digest'])} tailored packets.")
+            scouted_count = len(digest.get("jobs", []))
+            st.success(f"Pipeline executed successfully! Scouted {scouted_count} jobs. Generated {len(digest['digest'])} tailored packets.")
             st.json(digest["digest"][:2] if digest["digest"] else digest)
 
 # ==============================================================================
