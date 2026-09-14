@@ -456,3 +456,28 @@ def evaluate_and_optimize(
     # Re-evaluate
     final_eval = evaluate_resume_quality(optimized)
     return optimized, final_eval
+
+
+def check_anti_hallucination_guardrail(tailored_text: str, base_resume_text: str) -> list[str]:
+    """Flag technical skills in the tailored resume that were absent in the base resume.
+
+    Returns a list of warnings if ungrounded technical frameworks or tools were invented.
+    """
+    from .relevance import SKILL_CATEGORIES
+    all_known_tech: set[str] = set()
+    for cat_skills in SKILL_CATEGORIES.values():
+        all_known_tech.update(cat_skills)
+
+    tailored_lower = tailored_text.lower()
+    base_lower = base_resume_text.lower()
+
+    unverified = []
+    for skill in all_known_tech:
+        pattern = rf"\b{re.escape(skill)}\b"
+        if re.search(pattern, tailored_lower) and not re.search(pattern, base_lower):
+            unverified.append(skill)
+
+    if unverified:
+        return [f"Anti-Hallucination Warning: Found skills in tailored resume not present in base resume: {', '.join(unverified[:5])}"]
+    return []
+
