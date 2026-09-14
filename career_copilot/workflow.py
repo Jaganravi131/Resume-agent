@@ -50,25 +50,28 @@ def run_daily_cycle(query: str = "Python Developer") -> dict:
                     lines.append(f"Missing skills: {', '.join(missing)}")
                 lines.append(f"Experience level: {rel.get('experience_level_detected', 'unknown')}")
 
-            lines.append("Resume:")
-            lines.append(item["resume"])
-            # Show only the filename — never the full system path
-            pdf_name = item.get("resume_pdf", "")
-            if os.sep in pdf_name or "/" in pdf_name:
-                pdf_name = os.path.basename(pdf_name)
-            lines.append(f"Resume PDF: {pdf_name}")
-            lines.append("Projects:")
-            lines.append(item["projects"])
-            lines.append("Prep:")
-            lines.append(item["prep"])
-            lines.append("Profile sync:")
-            lines.append(item["profile"])
+            if item.get("resume") and item["resume"] != "Available on demand via Application Tracker":
+                lines.append("Resume:")
+                lines.append(item["resume"])
+                pdf_name = item.get("resume_pdf", "")
+                if os.sep in pdf_name or "/" in pdf_name:
+                    pdf_name = os.path.basename(pdf_name)
+                lines.append(f"Resume PDF: {pdf_name}")
+            else:
+                lines.append("Resume & PDF: Available on demand in Application Tracker")
 
-            concise_pdf = item.get("resume_pdf", "")
-            if os.sep in concise_pdf or "/" in concise_pdf:
-                concise_pdf = os.path.basename(concise_pdf)
+            if item.get("projects"):
+                lines.append("Projects:")
+                lines.append(item["projects"])
+            if item.get("prep"):
+                lines.append("Prep:")
+                lines.append(item["prep"])
+            if item.get("profile"):
+                lines.append("Profile sync:")
+                lines.append(item["profile"])
+
             concise_lines.append(
-                f"- {item['title']} at {item['company']} | Match: {item['match_percentage']}% | Apply: {item['apply_url']} | PDF: {concise_pdf}"
+                f"- {item['title']} at {item['company']} | Match: {item['match_percentage']}% | Apply: {item['apply_url']}"
             )
 
         if filter_reasons:

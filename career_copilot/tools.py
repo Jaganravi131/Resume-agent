@@ -129,7 +129,12 @@ def _get_resume_sources() -> list[Path]:
     resume_dir = Path(__file__).resolve().parent / "resume"
     if not resume_dir.exists():
         return []
-    return sorted(resume_dir.glob("*.pdf"))
+    # Prioritize Resume_latest.pdf or the newest modified PDF to avoid duplicates
+    latest = resume_dir / "Resume_latest.pdf"
+    if latest.exists():
+        return [latest]
+    pdfs = sorted(resume_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [pdfs[0]] if pdfs else []
 
 
 def _extract_resume_text(max_chars: int = 6000) -> str:
@@ -393,6 +398,23 @@ def _search_ddg_job_boards(query: str) -> list[dict]:
     return results
 
 
+def _expand_query_for_experience(sub_queries: list[str]) -> list[str]:
+    """Augment search queries with junior/entry keywords if target experience is entry-level."""
+    exp_level = os.environ.get("EXPERIENCE_LEVEL", "mid").lower()
+    is_junior = any(term in exp_level for term in ("fresher", "junior", "entry", "intern", "trainee", "graduate"))
+    if not is_junior:
+        return sub_queries
+
+    expanded: list[str] = []
+    junior_qualifiers = ("junior", "entry level", "graduate", "trainee", "intern", "associate")
+    for q in sub_queries:
+        expanded.append(q)
+        q_lower = q.lower()
+        if not any(k in q_lower for k in junior_qualifiers):
+            expanded.append(f"{q} junior")
+    return expanded
+
+
 def search_job_postings(query: str, max_results: int = 10) -> list[dict]:
     """Return live job postings with real apply URLs from public sources.
 
@@ -402,9 +424,12 @@ def search_job_postings(query: str, max_results: int = 10) -> list[dict]:
     print(f"[Tool] Searching job postings for query: '{query}'")
 
     # Split query by commas to support multiple distinct job search queries
-    sub_queries = [q.strip() for q in query.split(",") if q.strip()]
-    if not sub_queries:
-        sub_queries = ["python developer remote"]
+    raw_queries = [q.strip() for q in query.split(",") if q.strip()]
+    if not raw_queries:
+        raw_queries = ["python developer remote"]
+
+    # Automatically expand queries to target entry/junior roles when configured
+    sub_queries = _expand_query_for_experience(raw_queries)
 
     candidates: list[dict] = []
     seen_urls: set[str] = set()
@@ -521,17 +546,21 @@ def generate_tailored_resume(title: str, company: str, description: str) -> str:
             
             prompt = (
                 f"You are a professional ATS resume optimizer and resume writer.\n"
-                f"Your task is to rewrite the candidate's base resume to align perfectly with the target role: {title} at {company}.\n\n"
+                f"Your task is to rewrite the candidate's base resume to align with the target role: {title} at {company}.\n\n"
                 f"Target Job Description:\n{description}\n\n"
                 f"Candidate's Base Resume Text:\n{base_resume_text}\n\n"
+                f"CRITICAL ANTI-HALLUCINATION & TRUTH RULES:\n"
+                f"- STRICT FACTUAL GROUNDING: You must NEVER invent or hallucinate technologies, programming languages, libraries, cloud tools, employers, or degrees not mentioned in the Candidate's Base Resume Text.\n"
+                f"- If the job description requires tools the candidate lacks (e.g. Kubernetes, AWS, Rust), DO NOT falsely add them to the resume or claim experience with them.\n"
+                f"- Instead, emphasize the candidate's actual verified skills that are transferable, and highlight how their existing projects demonstrate engineering rigor and impact.\n"
+                f"- Retain all true factual accomplishments, metrics, and core facts from the base resume without fabrication.\n\n"
                 f"Strict formatting rules:\n"
                 f"1. Start directly with the Candidate's Name (do not output any intro text or Markdown code blocks like ```).\n"
                 f"2. Line 1: {candidate_name}\n"
                 f"3. Line 2: Email: {email} | Phone: {phone}\n"
                 f"4. Line 3: LinkedIn: {linkedin} | GitHub: {github} | Portfolio: {portfolio}\n"
                 f"5. Structure the rest with capitalized section headings (e.g., PROFESSIONAL SUMMARY, CORE SKILLS, EXPERIENCE, PROJECTS, EDUCATION) and bullet points starting with '- '.\n"
-                f"6. Make sure all experience descriptions are tailored to match the job requirements but stay truthful to the candidate's background.\n"
-                f"7. Do NOT append any debug info, base resume evidence lists, file paths, raw keywords lists, or metadata at the bottom. Keep it extremely clean and professional."
+                f"6. Do NOT append any debug info, base resume evidence lists, file paths, raw keywords lists, or metadata at the bottom. Keep it extremely clean and professional."
             )
             
             response = client.models.generate_content(
@@ -564,7 +593,12 @@ def generate_tailored_resume(title: str, company: str, description: str) -> str:
     return optimized
 
 
-def _export_resume_pdf_from_text(title: str, company: str, resume_text: str) -> str:
+def _export_resume_pdf_from_text(
+    title: str,
+    company: str,
+    resume_text: str,
+    output_path: str | Path | None = None,
+) -> str:
     """Export a pre-generated resume text to PDF.
 
     This avoids the duplicate call to generate_tailored_resume() that the
@@ -597,12 +631,16 @@ def _export_resume_pdf_from_text(title: str, company: str, resume_text: str) -> 
             self.canv.line(0, self.space_after, self.width, self.space_after)
             self.canv.restoreState()
 
-    output_dir = Path(__file__).resolve().parent / "generated_resumes"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / _build_resume_filename(title, company)
+    if output_path is None:
+        output_dir = Path(__file__).resolve().parent / "generated_resumes"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        final_output_path = output_dir / _build_resume_filename(title, company)
+    else:
+        final_output_path = Path(output_path)
+        final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     doc = SimpleDocTemplate(
-        str(output_path),
+        str(final_output_path),
         pagesize=LETTER,
         rightMargin=36,
         leftMargin=36,
@@ -708,7 +746,17 @@ def _export_resume_pdf_from_text(title: str, company: str, resume_text: str) -> 
             story.append(Paragraph(text, body_style))
 
     doc.build(story)
-    return str(output_path)
+    return str(final_output_path)
+
+
+def export_resume_pdf_from_markdown(
+    title: str,
+    company: str,
+    resume_text: str,
+    output_path: str | Path | None = None,
+) -> str:
+    """Export already generated tailored resume markdown text to a clean ATS-friendly PDF."""
+    return _export_resume_pdf_from_text(title, company, resume_text, output_path)
 
 
 def export_resume_pdf(title: str, company: str, description: str) -> str:
@@ -910,11 +958,12 @@ def record_application(job_id: int, apply_url: str, resume_text: str, status: st
     return f"Application for job {job_id} recorded with status '{status}'."
 
 
-def build_daily_digest(query: str) -> dict:
+def build_daily_digest(query: str, generate_full_packets: bool = False) -> dict:
     """Build a daily digest with TF-IDF relevance filtering.
 
-    Jobs below MIN_MATCH_PERCENTAGE are excluded. The digest includes
-    a full relevance breakdown for each included job.
+    Jobs below MIN_MATCH_PERCENTAGE are excluded.
+    If generate_full_packets is False (default), jobs are scouted, scored,
+    and stored without burning heavy tokens on unrequested resume PDFs.
     """
     jobs = search_job_postings(query)
     all_descriptions = [j.get("description", "") for j in jobs]
@@ -938,12 +987,17 @@ def build_daily_digest(query: str) -> dict:
 
         store_scouted_job(job["title"], job["company"], job["location"], job["url"], job["description"])
 
-        # Generate resume text once, reuse for PDF
-        resume_text = generate_tailored_resume(job["title"], job["company"], job["description"])
-        resume_pdf_path = _export_resume_pdf_from_text(job["title"], job["company"], resume_text)
-
-        # Only expose the filename — never the full system path
-        resume_pdf_display = Path(resume_pdf_path).name if resume_pdf_path else ""
+        if generate_full_packets:
+            resume_text = generate_tailored_resume(job["title"], job["company"], job["description"])
+            resume_pdf_path = _export_resume_pdf_from_text(job["title"], job["company"], resume_text)
+            resume_pdf_display = Path(resume_pdf_path).name if resume_pdf_path else ""
+            projects = recommend_projects(job["title"], job["description"], job["company"], job["url"])
+            profile = generate_profile_updates(job["title"], job["company"], job["description"], job["url"])
+        else:
+            resume_text = "Available on demand via Application Tracker"
+            resume_pdf_display = "On-demand"
+            projects = ""
+            profile = ""
 
         digest.append(
             {
@@ -956,9 +1010,9 @@ def build_daily_digest(query: str) -> dict:
                 "relevance": relevance,
                 "resume": resume_text,
                 "resume_pdf": resume_pdf_display,
-                "projects": recommend_projects(job["title"], job["description"], job["company"], job["url"]),
+                "projects": projects,
                 "prep": create_preparation_plan(job["title"], job["description"]),
-                "profile": generate_profile_updates(job["title"], job["company"], job["description"], job["url"]),
+                "profile": profile,
             }
         )
 
@@ -968,4 +1022,24 @@ def build_daily_digest(query: str) -> dict:
         "digest": digest,
         "filtered_out_count": filtered_out_count,
         "filter_reasons": filter_reasons,
+    }
+
+
+def generate_application_packet_for_job(title: str, company: str, description: str, url: str) -> dict:
+    """Generate a full tailored resume, ATS PDF, projects, and prep guide on demand for a selected job."""
+    resume_text = generate_tailored_resume(title, company, description)
+    pdf_path = _export_resume_pdf_from_text(title, company, resume_text)
+    projects = recommend_projects(title, description, company, url)
+    prep = create_preparation_plan(title, description)
+    profile = generate_profile_updates(title, company, description, url)
+    return {
+        "title": title,
+        "company": company,
+        "url": url,
+        "resume_text": resume_text,
+        "resume_pdf": pdf_path,
+        "resume_pdf_name": Path(pdf_path).name if pdf_path else "",
+        "projects": projects,
+        "prep": prep,
+        "profile": profile,
     }
