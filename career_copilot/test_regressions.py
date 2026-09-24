@@ -530,6 +530,69 @@ def test_company_intel_cache_ttl_and_poison() -> bool:
     return True
 
 
+def test_legacy_db_migration() -> bool:
+    """Pass 3: the resume_text ALTER must upgrade a legacy (pre-fix) applications
+    table, preserve existing rows, and init_db must be idempotent."""
+    import sqlite3
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    original_path = database.DB_PATH
+    try:
+        # Build a legacy schema WITHOUT resume_text (as the pre-fix init_db made),
+        # including a legacy row with the resume stuffed into notes (bug #14 era).
+        conn = sqlite3.connect(tmp.name)
+        conn.executescript("""
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, company TEXT,
+                location TEXT, url TEXT UNIQUE, description TEXT,
+                status TEXT DEFAULT 'found',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER UNIQUE,
+                apply_url TEXT, status TEXT, notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE daily_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, report_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE company_intel (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company TEXT UNIQUE,
+                domain TEXT, intel_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.execute(
+            "INSERT INTO applications (job_id, apply_url, status, notes) VALUES (1,'https://a.example','drafted','OLD-RESUME-AS-NOTES')"
+        )
+        conn.commit()
+        conn.close()
+
+        database.DB_PATH = tmp.name
+        database.init_db()  # must ALTER TABLE — must not crash on legacy schema
+        database.init_db()  # idempotent second run
+
+        with database.get_connection() as c:
+            cols = {r[1] for r in c.cursor().execute("PRAGMA table_info(applications)").fetchall()}
+        assert "resume_text" in cols and "notes" in cols, \
+            f"migration must add resume_text while preserving notes, cols={cols}"
+
+        # Legacy row preserved + writable through the new API
+        database.save_application(1, "https://a.example", "submitted", "new note", resume_text="NEW-BODY")
+        with database.get_connection() as c:
+            row = c.cursor().execute(
+                "SELECT notes, resume_text FROM applications WHERE job_id=1"
+            ).fetchone()
+        assert tuple(row) == ("new note", "NEW-BODY"), f"legacy row must upsert cleanly, got {row}"
+    finally:
+        database.DB_PATH = original_path
+        os.unlink(tmp.name)
+    print("  [PASS] legacy DB migrates cleanly (resume_text added, idempotent, rows preserved)")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -552,6 +615,7 @@ REGRESSION_TESTS = [
     test_resume_filename_collision_proof,
     test_company_analyzer_dead_domain_shortcircuit,
     test_company_intel_cache_ttl_and_poison,
+    test_legacy_db_migration,
 ]
 
 OFFLINE_UNIT_TESTS = [

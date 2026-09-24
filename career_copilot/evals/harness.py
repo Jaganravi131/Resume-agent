@@ -364,6 +364,97 @@ def check_llm_tailoring() -> dict:
     }
 
 
+def check_revise_loop_no_progress_break() -> dict:
+    """When the reviser is a no-op (LLM down), the critique loop must stop after
+    ONE attempt — re-evaluating an identical resume cannot make progress and
+    burned duplicate LLM calls per tailored resume."""
+    from career_copilot import resume_evaluator as re_
+
+    calls = {"n": 0}
+
+    def _noop_reviser(text, *args, **kwargs):
+        calls["n"] += 1
+        return text  # unchanged — simulates the unavailable-LLM fallback
+
+    original = re_.optimize_resume_for_role
+    re_.optimize_resume_for_role = _noop_reviser
+    try:
+        # A <50-char resume always fails the quality gate, so the loop MUST enter.
+        _, final_eval = re_.evaluate_and_optimize(
+            "Too short", "Backend Engineer", "Acme", "python django backend apis",
+            base_resume_text="python django backend experience with apis and databases",
+        )
+    finally:
+        re_.optimize_resume_for_role = original
+
+    attempts = final_eval.get("optimization_attempts", -1)
+    passed = 0 <= attempts <= 1 and calls["n"] <= 1
+    return {
+        "name": "revise_loop_no_progress",
+        "passed": passed,
+        "score": None,
+        "details": f"reviser calls={calls['n']}, attempts={attempts} (must stay <= 1 with a no-op reviser)",
+    }
+
+
+def check_intel_cache_anti_poison() -> dict:
+    """Unreachable-domain company intel must never be cached (anti-poison), and
+    the cache write path must leave the database untouched in that case."""
+    from career_copilot import database, profile_optimizer as profopt, tools
+
+    database.init_db()
+    company = f"EvalCacheCo-{os.urandom(4).hex()}"
+    calls: list[str] = []
+    original = profopt.analyze_company
+
+    def _dead(c, job_url, description):
+        calls.append(c)
+        return profopt.CompanyIntel(name=c, raw_homepage_text="")  # site unreachable
+
+    profopt.analyze_company = _dead
+    try:
+        tools.analyze_target_company(company, "https://jobs.example/eval", "desc")
+        poisoned = database.get_company_intel(company) is not None
+    finally:
+        profopt.analyze_company = original
+
+    passed = (not poisoned) and len(calls) == 1
+    return {
+        "name": "intel_cache_anti_poison",
+        "passed": passed,
+        "score": None,
+        "details": (
+            f"analyze calls={len(calls)}, cache row written for unreachable domain: {poisoned} "
+            f"(must be False); TTL={tools.INTEL_CACHE_TTL_DAYS}d"
+        ),
+    }
+
+
+def check_resume_filename_safety() -> dict:
+    """External job titles flow into filenames: allowlist charset, length cap,
+    and uniqueness for non-ASCII titles must all hold."""
+    from career_copilot import tools
+
+    names = [
+        tools._build_resume_filename("a" * 300, "b" * 300),
+        tools._build_resume_filename("データエンジニア", "株式会社"),
+        tools._build_resume_filename("机器学习工程师", "某公司"),
+        tools._build_resume_filename("Python Developer", "Acme"),
+    ]
+    well_formed = all(
+        n.startswith("resume_") and n.endswith(".pdf") and "/" not in n and ".." not in n and len(n) <= 120
+        for n in names
+    )
+    unique = len(set(names)) == len(names)
+    passed = well_formed and unique
+    return {
+        "name": "resume_filename_safety",
+        "passed": passed,
+        "score": None,
+        "details": f"well_formed={well_formed}, all_unique={unique}, lengths={[len(n) for n in names]}",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
@@ -378,6 +469,9 @@ OFFLINE_CHECKS = [
     check_fallback_grounding,
     check_threshold_safety,
     check_model_failover,
+    check_revise_loop_no_progress_break,
+    check_intel_cache_anti_poison,
+    check_resume_filename_safety,
 ]
 
 

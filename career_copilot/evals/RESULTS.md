@@ -1,6 +1,6 @@
 # Career Copilot — Evals Results
 
-> Generated 2026-09-24 12:58 UTC · offline-first suite
+> Generated 2026-09-24 13:04 UTC · offline-first suite
 
 | Check | Result | Score | Details |
 |---|---|---|---|
@@ -13,8 +13,11 @@
 | `fallback_grounding` | PASS | 1.00 | fallback never claims unowned skills (incl. adversarial JD) |
 | `threshold_safety` | PASS | 1.00 | MIN_MATCH_PERCENTAGE='40%' -> get_min_match()=40 (no crash) |
 | `model_failover` | PASS | 1.00 | call order=['primary-x', 'primary-x', 'standby-y'] (expect primary retry then standby); output='standby-ok' |
+| `revise_loop_no_progress` | PASS | — | reviser calls=1, attempts=1 (must stay <= 1 with a no-op reviser) |
+| `intel_cache_anti_poison` | PASS | — | analyze calls=1, cache row written for unreachable domain: False (must be False); TTL=7d |
+| `resume_filename_safety` | PASS | — | well_formed=True, all_unique=True, lengths=[100, 23, 23, 41] |
 
-**Overall: 9/9 checks passed.**
+**Overall: 12/12 checks passed.**
 
 ### Metric definitions
 - `scorer_bounds` — every score/category stays within 0-100 (regression for the >100% category bug)

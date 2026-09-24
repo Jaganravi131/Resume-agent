@@ -495,8 +495,15 @@ def evaluate_and_optimize(
             base_resume_text=base_resume_text,
         )
 
-        # Re-run stages 1-3 on the revision
-        cleaned = sanitize_resume_text(revised)
+        # Re-run stages 1-3 on the revision — unless the reviser made no change
+        # (LLM unavailable/rejected its own output → returns the sanitized input).
+        # Re-evaluating an identical resume cannot make progress; stop instead of
+        # burning the remaining attempts on duplicate LLM calls.
+        revised_clean = sanitize_resume_text(revised)
+        if revised_clean == cleaned:
+            logger.info("Revise loop produced an identical revision — stopping early (no progress possible).")
+            break
+        cleaned = revised_clean
         evaluation = evaluate_resume_quality(cleaned)
         hallucinated = find_unverified_skills(cleaned, base_resume_text) if base_resume_text else []
 
