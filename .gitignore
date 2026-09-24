@@ -45,6 +45,9 @@ career_copilot/screenshots/
 screenshots/
 *.log
 
+# Personal resume PDFs (PII — never commit; see career_copilot/resume/README.md)
+career_copilot/resume/*.pdf
+
 # IDE and OS Files
 .vscode/
 .idea/

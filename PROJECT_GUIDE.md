@@ -102,7 +102,7 @@ Career Copilot — Multi-Agent Architecture
 ## 3. File & Module Map
 
 ```
-adk-workspace/
+Resume-agent/
 ├── career_copilot/
 │   ├── __init__.py           # Package init; exposes root_agent
 │   ├── agent.py              # Google ADK agent & sub-agent definitions
@@ -110,22 +110,27 @@ adk-workspace/
 │   ├── apply.py              # CLI entry point for browser auto-apply
 │   ├── autofill_helpers.py   # Site-specific ATS form selectors
 │   ├── browser_runner.py     # Playwright browser automation engine
-│   ├── config.py             # Env loading, API key management, HTTP helpers
-│   ├── copilot.db            # SQLite database (auto-created at first run)
+│   ├── config.py             # Env loading, model chain w/ standby failover, HTTP helpers
 │   ├── database.py           # All SQLite CRUD operations
 │   ├── notifier.py           # Telegram / WhatsApp / Email notification senders
 │   ├── profile_optimizer.py  # Company intel + LinkedIn/GitHub/Portfolio optimizer
-│   ├── relevance.py          # TF-IDF + Gemini-based relevance scoring engine
-│   ├── resume_evaluator.py   # Quality gate: ATS scoring + sanitizer
-│   ├── resume/               # Directory: place your Resume_latest.pdf here
+│   ├── relevance.py          # TF-IDF first-pass filter + optional Gemini re-scoring
+│   ├── resume_evaluator.py   # Quality gate: ATS scoring, anti-hallucination guardrail, sanitizer
+│   ├── resume/               # Place your Resume_latest.pdf here (PDFs git-ignored — PII)
 │   ├── generated_resumes/    # Auto-created: tailored PDF resumes saved here
-│   ├── scheduler.py          # Windows Task Scheduler integration helper
-│   ├── tools.py              # Core tool functions used by agents (1045 lines)
+│   ├── evals/                # Offline-first eval harness (python -m career_copilot.evals.run_evals)
+│   ├── scheduler.py          # Keep-alive daily scheduler loop
+│   ├── install_task.ps1      # Windows Task Scheduler registration script
+│   ├── tools.py              # Core tool functions used by agents
 │   ├── workflow.py           # High-level pipeline orchestrator
-│   └── test_*.py             # Unit tests
+│   ├── run_tests.py          # Test runner (integration + regression + evaluator suites)
+│   └── test_*.py             # Test suites: test_evaluator / test_career_copilot / test_regressions
+├── .github/workflows/ci.yml  # CI: compile check + all test suites + evals
+├── pyproject.toml            # Packaging metadata + console entry points
 ├── requirements.txt          # Python dependencies
-├── .env                      # Your private secrets (NOT committed to Git)
-├── .env.example              # Template showing which keys to fill in
+├── README.md                 # Project overview
+├── PROJECT_REPORT.md         # Audit report: diagrams, bug list, errata of fixes
+├── PORTFOLIO_ROADMAP.md      # Agent-honesty audit + portfolio upgrade roadmap
 └── PROJECT_GUIDE.md          # This document
 ```
 
@@ -398,7 +403,7 @@ Jobs below `MIN_MATCH_PERCENTAGE` (default: 40%) are filtered before any LLM is 
 ### Anti-Hallucination Guardrail
 When Gemini tailors a resume, without explicit rules it tends to "bridge the gap" by inventing skills you don't have. Our guardrail:
 1. **In the prompt**: Explicit forbiddance rules ("NEVER invent technologies not in the base resume").
-2. **Post-generation**: `validate_no_hallucinated_skills()` checks if technical terms in the tailored resume exist in the base resume.
+2. **Post-generation**: `check_anti_hallucination_guardrail()` (via `find_unverified_skills`) checks technical terms in the tailored resume against the base resume — wired into `evaluate_and_optimize`'s generate → critique → revise loop, which rewrites until clean (max 3 attempts).
 
 ### Quality Gate Pattern (`resume_evaluator.py`)
 The `evaluate_and_optimize()` function is a **quality gate** — it intercepts the generated resume before returning it to the user:
@@ -444,34 +449,32 @@ Because LLMs are non-deterministic. Even with a perfect prompt, sometimes the ou
 ## 10. How to Run the App
 
 ### Start the Streamlit Web Dashboard
-```powershell
-& "c:\PROJECT_FILE\AI_ML_projects\adk-workspace\.venv\Scripts\streamlit.exe" run career_copilot\app.py
+```bash
+streamlit run career_copilot/app.py
 ```
 Opens at: http://localhost:8501
 
 ### Run the Daily Pipeline Manually (CLI)
-```powershell
-& "c:\PROJECT_FILE\AI_ML_projects\adk-workspace\.venv\Scripts\python.exe" -c "
-from career_copilot.workflow import run_daily_cycle
-result = run_daily_cycle('Python Developer')
-print(result['notification_status'])
-"
+```bash
+python -c "from career_copilot.workflow import run_daily_cycle; result = run_daily_cycle('Python Developer'); print(result['notification_status'])"
 ```
 
 ### Run the ATS Evaluator Test
-```powershell
-& "c:\PROJECT_FILE\AI_ML_projects\adk-workspace\.venv\Scripts\python.exe" career_copilot\test_evaluator.py
+```bash
+python career_copilot/test_evaluator.py
 ```
 
 ### Verify All Files Compile (No Syntax Errors)
-```powershell
-& "c:\PROJECT_FILE\AI_ML_projects\adk-workspace\.venv\Scripts\python.exe" -m compileall career_copilot
+```bash
+python -m compileall career_copilot
 ```
 
-### Set Up Windows Task Scheduler (Automated Daily Run)
-```powershell
-& "c:\PROJECT_FILE\AI_ML_projects\adk-workspace\.venv\Scripts\python.exe" career_copilot\scheduler.py
+### Run the Daily Scheduler Loop (Automated Daily Run)
+```bash
+python -m career_copilot.scheduler
 ```
+Keeps running and fires the daily cycle on schedule. On Windows, `install_task.ps1`
+registers this as a Task Scheduler task; on Linux/macOS, use cron or a systemd unit.
 
 ---
 
@@ -482,7 +485,8 @@ Create `career_copilot/.env` from `.env.example` and fill in all values:
 ```env
 # ── AI Provider ─────────────────────────────────────────────────────
 GOOGLE_API_KEY=your_google_gemini_api_key_here
-GEMINI_MODEL=gemini-2.0-flash    # or gemini-1.5-pro for higher quality
+GEMINI_MODEL=gemini-2.5-flash           # primary model (matches code default)
+GEMINI_STANDBY_MODEL=gemini-2.0-flash   # auto-failover on quota/5xx/outage
 
 # ── Candidate Profile ────────────────────────────────────────────────
 RESUME_NAME=Jagan Babu R
@@ -500,11 +504,12 @@ MIN_MATCH_PERCENTAGE=40         # Filter threshold (0-100)
 # ── Notification Channels ────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_id
-WHATSAPP_API_KEY=your_callmebot_api_key
-WHATSAPP_PHONE_NUMBER=+91xxxxxxxxxx
-EMAIL_SENDER=your_gmail@gmail.com
-EMAIL_PASSWORD=your_gmail_app_password   # Use Gmail App Password, not real password
-EMAIL_RECIPIENT=your_email@gmail.com
+WHATSAPP_TOKEN=your_meta_whatsapp_token
+WHATSAPP_PHONE_NUMBER_ID=your_whatsapp_phone_number_id
+WHATSAPP_TO_NUMBER=+91xxxxxxxxxx
+SMTP_USERNAME=your_gmail@gmail.com
+SMTP_PASSWORD=your_gmail_app_password   # Use Gmail App Password, not real password
+RECEIVER_EMAIL=your_email@gmail.com
 SMTP_SERVER=smtp.gmail.com
 SMTP_PORT=587
 ```
