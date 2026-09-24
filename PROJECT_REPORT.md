@@ -446,7 +446,14 @@ Notable observation during testing: the "good match" test reported `category sco
 > poisoned intel forever → 7-day TTL (`INTEL_CACHE_TTL_DAYS`) + unreachable-domain results are never cached;
 > verified: `call_gemini` failover chain, GitHub repo fetch (bounded, defensive), app.py network calls all
 > button-gated (no rerun-time storm).
-> Each fix is pinned by a `test_regressions.py` test (now 17 regression + 11 offline = 28/28).
+> **Reliability pass 3 (loop & migration classes):** (a) critique-revise loop made **no-progress LLM calls** — when
+> the reviser is a no-op (LLM down) it returned the identical text, which was then re-evaluated up to
+> `max_attempts-1` times per resume → identical revisions now break the loop after one attempt;
+> (b) legacy-DB migration path verified: pre-fix `applications` tables (no `resume_text`) upgrade via `ALTER TABLE`,
+> `init_db` is idempotent, legacy rows (resume-in-notes era) preserved and upsert cleanly. Verified clean:
+> revise-loop crash-safety (sanitized fallback), sanitize/quality-gate defensiveness, Telegram/WhatsApp chunking
+> (3500 chars). Evals extended to 12 checks (revise-loop no-progress, intel-cache anti-poison, filename safety).
+> Each fix is pinned by a `test_regressions.py` test (18 regression + 11 offline = 29/29).
 > Rows below are preserved as the original findings.
 
 Severity: 🔴 High (wrong/crashing behavior) · 🟠 Medium (logic flaw / broken promise) · 🟡 Low (hygiene / drift).

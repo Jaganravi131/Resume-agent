@@ -53,9 +53,27 @@
       "passed": true,
       "score": 1.0,
       "details": "call order=['primary-x', 'primary-x', 'standby-y'] (expect primary retry then standby); output='standby-ok'"
+    },
+    {
+      "name": "revise_loop_no_progress",
+      "passed": true,
+      "score": null,
+      "details": "reviser calls=1, attempts=1 (must stay <= 1 with a no-op reviser)"
+    },
+    {
+      "name": "intel_cache_anti_poison",
+      "passed": true,
+      "score": null,
+      "details": "analyze calls=1, cache row written for unreachable domain: False (must be False); TTL=7d"
+    },
+    {
+      "name": "resume_filename_safety",
+      "passed": true,
+      "score": null,
+      "details": "well_formed=True, all_unique=True, lengths=[100, 23, 23, 41]"
     }
   ],
-  "total": 9,
-  "passed": 9,
+  "total": 12,
+  "passed": 12,
   "all_passed": true
 }
