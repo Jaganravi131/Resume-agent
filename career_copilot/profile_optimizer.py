@@ -428,12 +428,16 @@ def analyze_company(company: str, job_url: str, description: str) -> CompanyInte
     homepage_text = _fetch_page_text(base_url)
     intel.raw_homepage_text = homepage_text
 
-    # Try common about page paths
-    for about_path in ("/about", "/about-us", "/company", "/about/"):
-        about_text = _fetch_page_text(f"{base_url}{about_path}")
-        if len(about_text) > 200:
-            intel.raw_about_text = about_text
-            break
+    # Try common about page paths — but ONLY when the domain responded at all.
+    # When the homepage fetch failed (dead/blocked domain), the about pages on
+    # the SAME domain will fail identically; attempting them multiplies digest
+    # latency (~15s timeout x 2 retries per attempt = minutes per dead company).
+    if homepage_text:
+        for about_path in ("/about", "/about-us", "/company", "/about/"):
+            about_text = _fetch_page_text(f"{base_url}{about_path}")
+            if len(about_text) > 200:
+                intel.raw_about_text = about_text
+                break
 
     # Combine all text sources for analysis
     combined = f"{homepage_text} {about_text} {description}"

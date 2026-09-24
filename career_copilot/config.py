@@ -33,8 +33,95 @@ logger = logging.getLogger("career_copilot.config")
 
 
 def get_gemini_model() -> str:
-    """Return configured Gemini model name (defaulting to gemini-2.5-flash)."""
+    """Return configured primary Gemini model name (defaulting to gemini-2.5-flash)."""
     return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+
+# ---------------------------------------------------------------------------
+# Model chain with automatic standby failover
+# ---------------------------------------------------------------------------
+
+def get_model_chain() -> list[str]:
+    """Return the model failover chain: [primary, standby].
+
+    Primary  = GEMINI_MODEL           (default: gemini-2.5-flash)
+    Standby  = GEMINI_STANDBY_MODEL   (default: gemini-2.0-flash)
+
+    When the primary model fails (quota/429, 5xx, connection, empty response),
+    `call_gemini` automatically retries once and then fails over to the standby
+    model before giving up. Set GEMINI_STANDBY_MODEL="" to disable failover.
+    """
+    primary = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    standby = os.environ.get("GEMINI_STANDBY_MODEL", "gemini-2.0-flash").strip()
+    chain = [m for m in (primary, standby) if m]
+    return chain or ["gemini-2.5-flash"]
+
+
+_GENAI_CLIENT = None
+
+
+def _get_genai_client():
+    """Return a cached google-genai client (raises if GOOGLE_API_KEY missing)."""
+    global _GENAI_CLIENT
+    if _GENAI_CLIENT is None:
+        from google import genai
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError("GOOGLE_API_KEY is not configured")
+        _GENAI_CLIENT = genai.Client(api_key=api_key)
+    return _GENAI_CLIENT
+
+
+def call_gemini(
+    prompt: str,
+    *,
+    json_mode: bool = False,
+    temperature: float | None = None,
+    max_attempts_per_model: int = 2,
+) -> str:
+    """Call Gemini with automatic standby-model failover.
+
+    Anti-short-circuit guarantee: every model in the chain is attempted up to
+    ``max_attempts_per_model`` times (default 2 = one retry) before failing over
+    to the next (standby) model. Only when the entire chain is exhausted does
+    the call fail — with a RuntimeError carrying every error. Failures are
+    never silently swallowed here; callers keep their template fallbacks for
+    the (rare) case where the whole chain is down.
+
+    Raises RuntimeError with the full error chain when ALL models fail.
+    """
+    errors: list[str] = []
+    for model in get_model_chain():
+        for attempt in range(1, max_attempts_per_model + 1):
+            try:
+                client = _get_genai_client()
+                config_kwargs: dict = {}
+                if json_mode:
+                    config_kwargs["response_mime_type"] = "application/json"
+                if temperature is not None:
+                    config_kwargs["temperature"] = temperature
+                config = None
+                if config_kwargs:
+                    from google.genai import types  # lazy: only needed with config
+                    config = types.GenerateContentConfig(**config_kwargs)
+
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config,
+                )
+                text = (response.text or "").strip()
+                if not text:
+                    raise RuntimeError("empty response body")
+                return text
+            except Exception as exc:
+                errors.append(f"{model}#attempt{attempt}: {exc}")
+                logger.warning(
+                    "Gemini call failed on %s (attempt %d/%d): %s",
+                    model, attempt, max_attempts_per_model, exc,
+                )
+
+    raise RuntimeError("All models in chain failed -> " + " | ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +138,7 @@ def load_env(env_path: str | Path | None = None) -> None:
     - Quoted values:  KEY="value with spaces"
     - Inline comments: KEY=value  # comment
     - Blank lines / comment-only lines
-    - Idempotent: only loads once unless *force* is True.
+    - Idempotent: only loads once per process (module-level _ENV_LOADED flag).
     """
     global _ENV_LOADED
     if _ENV_LOADED:
@@ -109,6 +196,26 @@ STOPWORDS: frozenset[str] = frozenset({
     "div", "class", "span", "href", "img", "src", "style", "width", "height",
     "http", "https", "www", "com", "html", "css", "padding", "margin",
 })
+
+
+# ---------------------------------------------------------------------------
+# Candidate profile (single source of truth — no personal data hard-coded)
+# ---------------------------------------------------------------------------
+
+def get_candidate_profile() -> dict[str, str]:
+    """Return candidate contact info from env with neutral placeholders.
+
+    Missing values fall back to obvious placeholders so an unconfigured install
+    NEVER emits someone else's identity. Personal data lives only in `.env`.
+    """
+    return {
+        "name": os.environ.get("RESUME_NAME", "Your Name"),
+        "email": os.environ.get("RESUME_EMAIL", "your.email@example.com"),
+        "phone": os.environ.get("RESUME_PHONE", "+00-00000-00000"),
+        "linkedin": os.environ.get("RESUME_LINKEDIN", "https://www.linkedin.com/in/your-profile/"),
+        "github": os.environ.get("RESUME_GITHUB", "https://github.com/your-username"),
+        "portfolio": os.environ.get("RESUME_PORTFOLIO", "https://your-portfolio.example.com"),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,13 @@ def run_daily_cycle(query: str = "Python Developer") -> dict:
         whatsapp = notifier.send_whatsapp_message(concise_summary)
         email = notifier.send_email("Career Copilot Daily Digest", f"<pre>{safe_summary}</pre>")
         database.save_daily_report(summary)
+
+        # No double-trigger: digest items were just delivered, so mark their jobs
+        # 'notified' (when any channel succeeded) to prevent notify_user_of_matches
+        # from sending the same jobs again on a later run.
+        if telegram or whatsapp or email:
+            for item in digest["digest"]:
+                database.update_job_status_by_url(item["url"], "notified")
     else:
         summary = (
             f"No jobs passed relevance filters for: {query}\n"
@@ -108,7 +115,8 @@ def run_daily_cycle(query: str = "Python Developer") -> dict:
 
     return {
         "query": query,
-        "matched_jobs": len(digest["jobs"]),
+        "jobs_fetched": len(digest["jobs"]),
+        "matched_jobs": len(digest["digest"]),
         "digest_items": len(digest["digest"]),
         "filtered_out": filtered_out,
         "telegram": telegram,

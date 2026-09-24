@@ -60,11 +60,16 @@ def main():
             headless=args.headless,
         )
 
-        # Safely handle None browser_result (user cancelled)
+        # Safely handle user cancellation (returned at the TOP level, not inside browser_result)
+        if result.get("status") == "cancelled":
+            print("\n[Apply CLI] Cancelled by user — no form autofill performed.")
+            sys.exit(0)
+
         browser_result = result.get("browser_result") or {}
         status_result = browser_result.get("status", "unknown")
 
         if status_result == "cancelled":
+            print("\n[Apply CLI] Cancelled by user — no form autofill performed.")
             sys.exit(0)
 
         # Update database status upon successful fill completion

@@ -8,15 +8,14 @@ from pypdf import PdfReader
 # Ensure current package path is available
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from career_copilot.config import load_env, get_gemini_model
+from career_copilot.config import load_env, get_candidate_profile
 load_env()
 
-from career_copilot import database, notifier
+from career_copilot import database
 from career_copilot.tools import (
     search_job_postings,
     compute_match_percentage,
     generate_tailored_resume,
-    export_resume_pdf,
     export_resume_pdf_from_markdown,
     generate_application_packet_for_job,
     create_preparation_plan,
@@ -104,18 +103,10 @@ with st.sidebar:
         
     st.divider()
     
-    # System Status & Telemetry
+    # System Status & Telemetry (via database helpers — no raw SQL in the UI layer)
     st.subheader("📊 System Telemetry")
-    conn = database.get_connection()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM jobs")
-    job_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM applications")
-    app_count = c.fetchone()[0]
-    conn.close()
-    
-    st.metric("Scouted Jobs", job_count)
-    st.metric("Applications Tracked", app_count)
+    st.metric("Scouted Jobs", database.get_job_count())
+    st.metric("Applications Tracked", database.get_application_count())
     st.metric("Active Agents", "9 / 9")
     
     st.divider()
@@ -181,7 +172,7 @@ with tab_scout:
     with col1:
         search_query = st.text_input("Target Job Role / Keywords", value="Python Developer")
     with col2:
-        num_results = st.slider("Max Results per Source", min_value=1, max_value=10, value=3)
+        num_results = st.slider("Max Results (total across sources)", min_value=1, max_value=10, value=3)
         
     user_skills_input = st.text_area("Your Core Skills (for reference)", value="Python, FastAPI, SQL, Docker, Machine Learning, Git, REST APIs")
     
@@ -365,7 +356,8 @@ with tab_tracker:
         with col_act1:
             selected_job_id = st.selectbox("Select Job ID to Manage", jobs_df["ID"])
         with col_act2:
-            new_status = st.selectbox("Update Status", ["found", "notified", "drafted", "applied", "interviewing", "archived"])
+            # Job lifecycle only — 'drafted' lives on the applications table, not jobs
+            new_status = st.selectbox("Update Status", list(database.ALLOWED_JOB_STATUSES))
             if st.button("Save Status Update"):
                 database.update_job_status(selected_job_id, new_status)
                 st.success(f"Job #{selected_job_id} status updated to '{new_status}'!")
@@ -445,9 +437,8 @@ with tab_chat:
             reply = "⚠️ Google API Key is not configured. Please enter your Gemini API key in the sidebar to chat."
         else:
             try:
-                from google import genai
-                client = genai.Client(api_key=api_key)
-                
+                from career_copilot.config import call_gemini
+
                 base_resume = _extract_resume_text()
                 system_context = (
                     f"You are the Career Copilot AI Agent. You help software engineers, ML engineers, and developers "
@@ -456,11 +447,8 @@ with tab_chat:
                     f"Always provide concrete, actionable, highly practical technical career advice."
                 )
 
-                response = client.models.generate_content(
-                    model=get_gemini_model(),
-                    contents=f"{system_context}\n\nUser Question: {user_prompt}"
-                )
-                reply = response.text
+                # Standby-model failover handled by call_gemini
+                reply = call_gemini(f"{system_context}\n\nUser Question: {user_prompt}", temperature=0.7)
             except Exception as e:
                 reply = f"Error generating response: {e}"
 

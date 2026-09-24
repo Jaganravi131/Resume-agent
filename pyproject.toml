@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "career-copilot"
+version = "1.1.0"
+description = "Multi-agent AI job-search automation: scouting, relevance scoring, resume tailoring, application autofill, and daily digests."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "google-adk>=1.0.0",
+    "google-genai>=1.0.0",
+    "pypdf>=4.0.0",
+    "reportlab>=4.0.0",
+    "playwright>=1.40.0",
+    "streamlit>=1.49.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+career-copilot-scheduler = "career_copilot.scheduler:run_scheduler"
+career-copilot-apply = "career_copilot.apply:main"
+
+[tool.setuptools]
+packages = ["career_copilot", "career_copilot.evals"]

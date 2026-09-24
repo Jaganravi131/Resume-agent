@@ -41,45 +41,44 @@ def notify_user_of_matches() -> str:
     if not found_jobs:
         return "No new jobs with 'found' status were discovered to notify the user."
 
-    email_content = "<h2>Daily Job Match Report</h2><p>Here are your new job matches:</p><ul>"
+    email_content = notifier.build_match_report_email(found_jobs)
     telegram_message = "Daily Job Match Report\n\nHere are your new job matches:\n\n"
     whatsapp_message = "Daily Job Match Report\n\nHere are your new job matches:\n\n"
 
     for job in found_jobs:
         job_id, title, company, location, url, description, _, _ = job
-        # Escape HTML in user-controlled data
-        safe_title = str(title).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        safe_company = str(company).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        safe_location = str(location).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        safe_desc = str(description or "")[:200].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        email_content += (
-            f"<li><strong>{safe_title}</strong> at <em>{safe_company}</em> ({safe_location})<br/>"
-            f"<a href='{url}'>Apply Here</a><br/><small>{safe_desc}</small></li><br/>"
-        )
         telegram_message += f"- {title} - {company} ({location})\n{url}\n\n"
         whatsapp_message += f"- {title} - {company} ({location})\n{url}\n\n"
-
-    email_content += "</ul>"
 
     telegram_success = notifier.send_telegram_message(telegram_message)
     whatsapp_success = notifier.send_whatsapp_message(whatsapp_message)
     email_success = notifier.send_email("Career Copilot - Daily Job Match Report", email_content)
 
-    for job in found_jobs:
-        database.update_job_status(job[0], "notified")
+    any_success = telegram_success or whatsapp_success or email_success
+    if any_success:
+        # Only transition jobs to 'notified' when at least one channel delivered —
+        # otherwise leave them as 'found' so the next run retries delivery.
+        for job in found_jobs:
+            database.update_job_status(job[0], "notified")
+        delivery_note = "Jobs marked as 'notified'."
+    else:
+        delivery_note = (
+            "All delivery channels failed — jobs left as 'found' and will be retried "
+            "on the next run (no premature state transition)."
+        )
 
     return (
         f"Processed {len(found_jobs)} jobs. Telegram success: {telegram_success}. "
-        f"WhatsApp success: {whatsapp_success}. Email success: {email_success}."
+        f"WhatsApp success: {whatsapp_success}. Email success: {email_success}. {delivery_note}"
     )
 
 
-def run_career_pipeline(query: str = "Python Developer") -> dict:
+def run_career_pipeline(query: str = "Python Developer", max_packets: int = 5) -> dict:
     """Run the full pipeline: search → score → resume → apply → notify.
 
     Only processes actionable jobs (status 'found' or 'notified'),
-    not every job ever stored in the database.
+    not every job ever stored in the database. `max_packets` caps how many
+    full application packets (LLM-heavy) are generated per run to bound cost.
     """
     import os
     if query == "Python Developer":
@@ -103,8 +102,8 @@ def run_career_pipeline(query: str = "Python Developer") -> dict:
             }
         )
 
-    # Only process actionable jobs, not ALL jobs ever stored
-    for job in database.get_actionable_jobs():
+    # Only process actionable jobs, not ALL jobs ever stored (and cap packet cost)
+    for job in database.get_actionable_jobs()[:max(0, int(max_packets))]:
         job_id, title, company, location, url, description, status, created_at = job
         packet = build_application_packet(title, company, description, url)
         application_items.append(
@@ -128,7 +127,8 @@ def run_career_pipeline(query: str = "Python Developer") -> dict:
     notification_status = notify_user_of_matches()
     return {
         "query": query,
-        "matched_jobs": len(digest["jobs"]),
+        "jobs_fetched": len(digest["jobs"]),
+        "matched_jobs": len(digest["digest"]),
         "prep_items": prep_items,
         "application_items": application_items,
         "notification_status": notification_status,
@@ -240,8 +240,13 @@ root_agent = AgentFactory(
     description="Coordinates job scouting, resume tailoring, application tracking, profile updates, and daily monitoring.",
     instruction=(
         "You are a Career Copilot. Orchestrate the sub-agents to find relevant jobs, tailor the resume, "
-        "recommend supporting projects, prepare for interviews, sync public profiles, and send a daily update."
+        "recommend supporting projects, prepare for interviews, sync public profiles, and send a daily update. "
+        "For the complete end-to-end pipeline (search -> score -> packets -> record -> notify) use "
+        "run_career_pipeline so no stage is ever skipped. Delegate single-stage tasks to the specialist sub-agents."
     ),
+    # run_career_pipeline is registered here so triggering the full pipeline can
+    # never bypass stages via ad-hoc tool calls (anti-short-circuit guarantee).
+    tools=[run_career_pipeline],
     sub_agents=[
         scout_agent,
         resume_agent,
