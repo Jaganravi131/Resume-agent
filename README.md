@@ -1,6 +1,6 @@
 # Career Copilot — AI-Powered Job Search & Application Agent
 
-An agentic multi-agent system built with [Google ADK](https://google.github.io/adk-docs/) that automates your entire job search pipeline: scouting jobs from live APIs, scoring relevance with TF-IDF, tailoring resumes with Gemini, filling application forms via browser automation, and sending daily digests to Telegram/WhatsApp/Email.
+An agentic multi-agent system built with [Google ADK](https://google.github.io/adk-docs/) that automates the heavy lifting of your job search: scouting jobs from live APIs and public job boards, scoring relevance with TF-IDF (plus an optional Gemini re-score), tailoring resumes with Gemini under an anti-hallucination quality gate, pre-filling application forms via browser automation — you always review and hit submit yourself — and sending daily digests to Telegram/WhatsApp/Email.
 
 > 🌐 **Interactive Web App & Showcase UI**: Launch live with `python -m streamlit run career_copilot/app.py` for interactive job scouting, ATS resume scoring, tailoring, and interview prep!
 
@@ -34,14 +34,14 @@ An agentic multi-agent system built with [Google ADK](https://google.github.io/a
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Career_copilot_agent (Root)                      │
-│   Orchestrates all sub-agents based on user queries                     │
-├───────┬────────┬──────────┬──────────┬───────┬──────────┬──────┬───────┤
-│ Scout │ Resume │ Resume   │ Appli-   │ Proj  │ Prep     │ Prof │ Brwsr │
-│ Agent │ Optim. │ Evaluator│ cation   │ Recom │ Agent    │ Opt  │ Agent │
-│       │ Agent  │ Agent    │ Agent    │ Agent │          │ Agnt │       │
-└───────┴────────┴──────────┴──────────┴───────┴──────────┴──────┴───────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          Career_copilot_agent (Root)                            │
+│         Orchestrates all sub-agents based on user queries (run_career_pipeline)  │
+├────────┬────────┬─────────┬────────┬────────┬────────┬─────────┬────────┬────────┤
+│ Scout  │ Resume │ Resume  │ Appli- │ Proj   │ Prep   │ Prof    │ Daily  │ Brwsr  │
+│ Agent  │ Optim. │ Eval.   │ cation │ Recom  │ Agent  │ Optim   │Monitor │ Agent  │
+│        │ Agent  │ Agent   │ Agent  │ Agent  │        │ Agnt    │ Agent  │        │
+└────────┴────────┴─────────┴────────┴────────┴────────┴─────────┴────────┴────────┘
     │        │         │          │         │        │        │       │
     ▼        ▼         ▼          ▼         ▼        ▼        ▼       ▼
  Live    Gemini    Sanitize    Record   Company  Interview LinkedIn Playwright
@@ -81,7 +81,7 @@ An agentic multi-agent system built with [Google ADK](https://google.github.io/a
 ```bash
 # 1. Clone the repository
 git clone <your-repo-url>
-cd adk-workspace
+cd Resume-agent
 
 # 2. Create and activate virtual environment
 python -m venv .venv
@@ -113,6 +113,8 @@ cp career_copilot/.env.example career_copilot/.env
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `GOOGLE_API_KEY` | Gemini API key for AI features | ✅ Yes |
+| `GEMINI_MODEL` | Primary Gemini model (default: `gemini-2.5-flash`) | Optional |
+| `GEMINI_STANDBY_MODEL` | Standby model auto-used when the primary fails (default: `gemini-2.0-flash`; set empty to disable) | Optional |
 | `RESUME_NAME` | Your full name (appears on resumes) | ✅ Yes |
 | `RESUME_EMAIL` | Your email address | ✅ Yes |
 | `RESUME_PHONE` | Your phone number | ✅ Yes |
@@ -212,8 +214,12 @@ python -c "from career_copilot.workflow import run_daily_cycle; print(run_daily_
 Set up automated daily job searches using the built-in scheduler:
 
 ```bash
-# Run the scheduler (uses Windows Task Scheduler / cron)
-python career_copilot/scheduler.py
+# Keep-alive scheduler loop (runs daily at 09:00 by default)
+python -m career_copilot.scheduler
+
+# Or single-run mode for cron / systemd timers (exits 0 on success, 1 on failure):
+python -m career_copilot.scheduler --once
+#   crontab example: 0 9 * * * cd /path/to/Resume-agent && python -m career_copilot.scheduler --once
 
 # Or install as a Windows scheduled task
 powershell -ExecutionPolicy Bypass -File career_copilot/install_task.ps1
@@ -405,15 +411,19 @@ print(f"Total jobs: {len(all_jobs)} | Actionable: {len(active)}")
 ### 8. Testing
 
 ```bash
-# Run the full test suite
+# Hermetic regression + offline unit suite (no network / no API key — CI-safe)
+python career_copilot/test_regressions.py
+
+# Offline eval suite (9 checks; exit 0 only if all pass)
+python -m career_copilot.evals.run_evals
+
+# Full test suite incl. live integration (network; notification creds are
+# stashed automatically so tests can never spam real channels)
 cd career_copilot
 python -m pytest test_career_copilot.py -v
 
 # Run tests with the test runner script
 python career_copilot/run_tests.py
-
-# Run a specific test
-python -m pytest test_career_copilot.py -v -k "test_generate_tailored_resume"
 ```
 
 ---
@@ -421,8 +431,11 @@ python -m pytest test_career_copilot.py -v -k "test_generate_tailored_resume"
 ## Project Structure
 
 ```
-adk-workspace/
+Resume-agent/
 ├── README.md                           ← This file
+├── PROJECT_GUIDE.md                    ← Build guide & engineering journal
+├── pyproject.toml                      ← Packaging metadata & entry points
+├── .github/workflows/ci.yml            ← CI: regression + eval suites
 ├── requirements.txt                    ← Python dependencies
 ├── career_copilot/
 │   ├── __init__.py                     ← Package init, loads .env
@@ -440,16 +453,17 @@ adk-workspace/
 │   ├── scheduler.py                    ← Daily task scheduler
 │   ├── install_task.ps1                ← Windows Task Scheduler setup
 │   ├── test_career_copilot.py          ← Test suite
-│   ├── run_tests.py                    ← Test runner script
+│   ├── test_regressions.py             ← Hermetic regression suite (CI-gateable)
+│   ├── run_tests.py                    ← Test runner (live + regression suites)
+│   ├── evals/                          ← Offline-first eval harness (9 checks)
 │   ├── .env                            ← Your environment variables (DO NOT COMMIT)
 │   ├── .env.example                    ← Template for .env
 │   ├── .gitignore                      ← Git ignore rules
-│   ├── copilot.db                      ← SQLite database file
-│   ├── resume/                         ← Your base resume PDFs (source material)
-│   │   ├── Resume_latest.pdf
-│   │   └── Resume (1).pdf
-│   └── generated_resumes/              ← Tailored PDFs (auto-generated per job)
-└── my_first_agent/                     ← Separate agent project
+│   ├── copilot.db                      ← SQLite database file (auto-created)
+│   └── resume/                         ← Your base resume PDFs (local only — gitignored)
+│       ├── Resume_latest.pdf
+│       └── Resume (1).pdf
+└── generated_resumes/                  ← Tailored PDFs (auto-generated per job)
 ```
 
 ---
