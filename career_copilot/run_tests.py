@@ -34,3 +34,8 @@ sys.path.insert(0, workspace)
 # Now import the test module and run
 from career_copilot.test_career_copilot import test_workflow
 test_workflow()
+
+# Reliability regression suite (hermetic: no network, no LLM)
+print("\n")
+from career_copilot import test_regressions
+sys.exit(test_regressions.main())

@@ -37,6 +37,34 @@ def _chunk_message(message: str, max_len: int = 3500) -> list[str]:
     return chunks
 
 
+def build_match_report_email(found_jobs) -> str:
+    """Build the HTML email body for a batch of job rows (id, title, company,
+    location, url, description, status, created_at).
+
+    All user/job-controlled strings — INCLUDING the URL used in href — are
+    HTML-escaped so hostile or malformed listings cannot inject markup.
+    """
+    def esc(value) -> str:
+        return (
+            str(value)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#x27;")
+        )
+
+    body = "<h2>Daily Job Match Report</h2><p>Here are your new job matches:</p><ul>"
+    for job in found_jobs:
+        _job_id, title, company, location, url, description, *_ = job
+        body += (
+            f"<li><strong>{esc(title)}</strong> at <em>{esc(company)}</em> ({esc(location)})<br/>"
+            f"<a href='{esc(url)}'>Apply Here</a><br/><small>{esc(str(description or '')[:200])}</small></li><br/>"
+        )
+    body += "</ul>"
+    return body
+
+
 def send_whatsapp_message(message: str) -> bool:
     token = os.environ.get("WHATSAPP_TOKEN")
     phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
@@ -65,7 +93,9 @@ def send_whatsapp_message(message: str) -> bool:
         with urllib.request.urlopen(req, timeout=10) as response:
             res_data = response.read()
             res_json = json.loads(res_data.decode("utf-8"))
-            return bool(res_json)
+            # Cloud API returns {"messages": [...]} on success; treat an
+            # explicit ok:true as success too. An empty/error body is failure.
+            return bool(res_json.get("messages")) or bool(res_json.get("ok"))
     except Exception as e:
         logger.error("Failed to send WhatsApp message: %s", e)
         print(_safe_terminal_text(f"[WhatsApp Error] Message fell back to terminal:\n{message}\n"))
@@ -133,7 +163,7 @@ def send_email(subject: str, html_content: str) -> bool:
     msg.attach(MIMEText(html_content, "html"))
 
     try:
-        server = smtplib.SMTP(smtp_server, int(smtp_port))
+        server = smtplib.SMTP(smtp_server, int(smtp_port), timeout=15)
         server.starttls()
         server.login(username, password)
         server.sendmail(username, receiver, msg.as_string())

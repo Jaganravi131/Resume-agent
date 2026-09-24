@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The offline suite needs only the PDF stack; google-adk is stubbed.
+      - name: Install core dependencies
+        run: pip install pypdf reportlab
+
+      - name: Syntax check
+        run: python -m compileall -q career_copilot
+
+      - name: Evaluator smoke test
+        run: python career_copilot/test_evaluator.py
+
+      - name: Regression + offline unit suite (hermetic)
+        run: python career_copilot/test_regressions.py
+
+      - name: Evals (9 checks, CI-gateable)
+        run: python -m career_copilot.evals.run_evals

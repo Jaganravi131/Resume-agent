@@ -1,0 +1,61 @@
+{
+  "checks": [
+    {
+      "name": "scorer_bounds",
+      "passed": true,
+      "score": 1.0,
+      "details": "all scores/categories within 0-100 (incl. duplicate-heavy JD)"
+    },
+    {
+      "name": "discrimination",
+      "passed": true,
+      "score": 0.875,
+      "details": "good>bad win rate 3/3 families; Spearman(label, score) = 0.750; scores={'backend': {'good': 84, 'mediocre': 37, 'bad': 31}, 'data': {'good': 76, 'mediocre': 78, 'bad': 19}, 'platform': {'good': 64, 'mediocre': 37, 'bad': 22}}"
+    },
+    {
+      "name": "guardrail_recall",
+      "passed": true,
+      "score": 1.0,
+      "details": "sample-level catch 3/3 (100%); skill-level recall 6/6 (100%)"
+    },
+    {
+      "name": "guardrail_false_positives",
+      "passed": true,
+      "score": 1.0,
+      "details": "clean 3/3 truthful samples (0 false alarms)"
+    },
+    {
+      "name": "sanitizer_invariants",
+      "passed": true,
+      "score": 1.0,
+      "details": "paths/fences/debug/metadata all stripped"
+    },
+    {
+      "name": "quality_gate_separation",
+      "passed": true,
+      "score": 1.0,
+      "details": "well-formed=95/100 passed=True; garbage=0/100 passed=False"
+    },
+    {
+      "name": "fallback_grounding",
+      "passed": true,
+      "score": 1.0,
+      "details": "fallback never claims unowned skills (incl. adversarial JD)"
+    },
+    {
+      "name": "threshold_safety",
+      "passed": true,
+      "score": 1.0,
+      "details": "MIN_MATCH_PERCENTAGE='40%' -> get_min_match()=40 (no crash)"
+    },
+    {
+      "name": "model_failover",
+      "passed": true,
+      "score": 1.0,
+      "details": "call order=['primary-x', 'primary-x', 'standby-y'] (expect primary retry then standby); output='standby-ok'"
+    }
+  ],
+  "total": 9,
+  "passed": 9,
+  "all_passed": true
+}

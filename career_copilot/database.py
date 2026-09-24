@@ -6,6 +6,15 @@ logger = logging.getLogger("career_copilot.database")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "copilot.db")
 
+# Job lifecycle: found -> notified -> applied -> interviewing -> archived
+ALLOWED_JOB_STATUSES = ("found", "notified", "applied", "interviewing", "archived")
+
+# Application lifecycle (human-in-the-loop: the user always clicks final submit):
+# drafted -> ready_to_submit -> submitted -> interviewing -> offer | rejected
+ALLOWED_APPLICATION_STATUSES = (
+    "drafted", "ready_to_submit", "submitted", "interviewing", "offer", "rejected",
+)
+
 
 def get_connection():
     """Return a new connection with WAL mode and a 10s timeout for concurrency."""
@@ -36,6 +45,7 @@ def init_db():
                 apply_url TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'drafted',
                 notes TEXT,
+                resume_text TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(job_id)
             )
@@ -58,6 +68,14 @@ def init_db():
             )
         """)
         conn.commit()
+
+    # Migration for legacy databases created before the resume_text column
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute("ALTER TABLE applications ADD COLUMN resume_text TEXT DEFAULT ''")
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
 
 def add_job(title, company, location, url, description):
@@ -99,10 +117,33 @@ def get_actionable_jobs():
 
 
 def update_job_status(job_id, status):
+    """Update a job's status. Rejects values outside ALLOWED_JOB_STATUSES."""
+    if status not in ALLOWED_JOB_STATUSES:
+        logger.warning(
+            "Rejected invalid job status %r for job %s (allowed: %s)",
+            status, job_id, ALLOWED_JOB_STATUSES,
+        )
+        return False
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
         conn.commit()
+        return True
+
+
+def update_job_status_by_url(url, status):
+    """Update a job's status by its unique URL (used by digest/notify flows)."""
+    if status not in ALLOWED_JOB_STATUSES:
+        logger.warning(
+            "Rejected invalid job status %r for url %s (allowed: %s)",
+            status, url, ALLOWED_JOB_STATUSES,
+        )
+        return 0
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE jobs SET status = ? WHERE url = ?", (status, url))
+        conn.commit()
+        return cursor.rowcount
 
 
 def get_all_jobs():
@@ -112,22 +153,70 @@ def get_all_jobs():
         return cursor.fetchall()
 
 
-def save_application(job_id, apply_url, status, notes):
+def get_job_count() -> int:
+    with get_connection() as conn:
+        return conn.cursor().execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+
+def get_application_count() -> int:
+    with get_connection() as conn:
+        return conn.cursor().execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+
+
+def save_application(job_id, apply_url, status, notes, resume_text=""):
+    """Upsert an application record. `notes` holds free-form notes; the resume
+    payload lives in its own `resume_text` column (legacy callers that stuffed
+    the resume into `notes` are preserved as-is for old rows)."""
+    if status not in ALLOWED_APPLICATION_STATUSES:
+        logger.warning(
+            "Unknown application status %r for job_id=%s — stored as 'drafted' (allowed: %s)",
+            status, job_id, ALLOWED_APPLICATION_STATUSES,
+        )
+        status = "drafted"
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO applications (job_id, apply_url, status, notes)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO applications (job_id, apply_url, status, notes, resume_text)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 apply_url = excluded.apply_url,
                 status = excluded.status,
                 notes = excluded.notes,
-                created_at = CURRENT_TIMESTAMP
+                resume_text = excluded.resume_text
             """,
-            (job_id, apply_url, status, notes),
+            (job_id, apply_url, status, notes, resume_text or ""),
         )
         conn.commit()
+
+
+def update_application_status(job_id, status, apply_url=None):
+    """Advance an application's status (drafted -> ready_to_submit -> submitted -> ...).
+
+    Rejects values outside ALLOWED_APPLICATION_STATUSES — previously nothing
+    ever moved an application past 'drafted' and any string was accepted (§8.11).
+    Returns True when a row was actually updated.
+    """
+    if status not in ALLOWED_APPLICATION_STATUSES:
+        logger.warning(
+            "Refusing invalid application status %r for job_id=%s (allowed: %s)",
+            status, job_id, ALLOWED_APPLICATION_STATUSES,
+        )
+        return False
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if apply_url:
+            cursor.execute(
+                "UPDATE applications SET status=? WHERE job_id=? AND apply_url=?",
+                (status, job_id, apply_url),
+            )
+        else:
+            cursor.execute(
+                "UPDATE applications SET status=? WHERE job_id=?",
+                (status, job_id),
+            )
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 def save_daily_report(report_text):
@@ -176,29 +265,37 @@ def cleanup_old_records(days: int = 90) -> dict:
     - Jobs older than *days* that are already 'applied' or 'archived'
     - Daily reports older than *days*
     Returns a summary dict with counts of deleted rows.
+
+    Date handling: SQLite CURRENT_TIMESTAMP is UTC ('YYYY-MM-DD HH:MM:SS'),
+    so the cutoff is computed in UTC with the SAME format (naive local-time
+    ISO strings with 'T' previously compared incorrectly and deleted rows
+    from the cutoff day prematurely). 'T' separators in stored values are
+    normalized defensively.
     """
     import datetime
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+    cutoff_dt = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    cutoff = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
     deleted = {}
 
     with get_connection() as conn:
         cursor = conn.cursor()
 
         cursor.execute(
-            "DELETE FROM jobs WHERE status IN ('applied', 'archived') AND created_at < ?",
+            "DELETE FROM jobs WHERE status IN ('applied', 'archived') "
+            "AND replace(created_at, 'T', ' ') < ?",
             (cutoff,),
         )
         deleted["old_jobs"] = cursor.rowcount
 
         cursor.execute(
-            "DELETE FROM daily_reports WHERE created_at < ?",
+            "DELETE FROM daily_reports WHERE replace(created_at, 'T', ' ') < ?",
             (cutoff,),
         )
         deleted["old_reports"] = cursor.rowcount
 
         conn.commit()
 
-    logger.info("Database cleanup: %s", deleted)
+    logger.info("Database cleanup (cutoff %s UTC): %s", cutoff, deleted)
     return deleted
 
 

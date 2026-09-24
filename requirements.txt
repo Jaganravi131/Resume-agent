@@ -3,9 +3,11 @@ google-genai>=1.0.0
 pypdf>=4.0.0
 reportlab>=4.0.0
 playwright>=1.40.0
-streamlit>=1.30.0
+streamlit>=1.49.0
 pandas>=2.0.0
 opentelemetry-semantic-conventions>=0.51b0
+# Dev/test dependencies
+pytest>=8.0.0
 
 
 

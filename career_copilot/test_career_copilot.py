@@ -417,6 +417,23 @@ def test_workflow():
 
     results = {}
 
+    # Hermetic guard: NEVER send real notifications from the test suite even if
+    # the developer's .env has live Telegram/WhatsApp/SMTP credentials.
+    notif_keys = (
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+        "SMTP_SERVER", "SMTP_USERNAME", "SMTP_PASSWORD", "RECEIVER_EMAIL",
+        "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TO_NUMBER",
+    )
+    stashed = {k: os.environ.pop(k, None) for k in notif_keys}
+    try:
+        _run_workflow_body(results)
+    finally:
+        for k, v in stashed.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def _run_workflow_body(results: dict) -> None:
     print("\n--- Phase 1: Autofill Helpers ---")
     results["autofill_detection"] = test_autofill_mapping_detection()
     results["packet_enrichment"] = test_site_specific_packet_enrichment()
