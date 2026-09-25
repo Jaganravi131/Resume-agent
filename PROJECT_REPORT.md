@@ -429,7 +429,9 @@ Notable observation during testing: the "good match" test reported `category sco
 > **§8 partial-work items since resolved:** §8.1 (7-day plan + Q&A), §8.2 (guardrail wired), §8.3 (pipeline tool exposed),
 > §8.4 (`filter_jobs_by_relevance` is now the digest's Phase-1 gate — no more hand-rolled loop), §8.5 (`AI_FORGE_*` vars
 > removed), §8.7 (`scheduler --once`: cron/systemd-friendly single-run mode), §8.8 (`GITHUB_USERNAME` in `.env.example`),
-> §8.9 (DDG parser rewritten attribute-order tolerant — markup shuffles no longer yield silent zero results),
+> §8.9 (DDG parser rewritten attribute-order tolerant — markup shuffles no longer yield silent zero results; **plus** board
+> jobs are now enriched with authoritative data from the official Greenhouse/Lever public APIs, scraped = fallback),
+> §8.11 additionally: the apply CLI now gates job='applied' behind explicit submit confirmation (filled ≠ submitted),
 > §8.10 (Jobicy tries the full query phrase before the first-keyword fallback), §8.11 (application status machine:
 > `ALLOWED_APPLICATION_STATUSES` + `update_application_status`, invalid values rejected/coerced). §8.12 stays intentional
 > (human-in-the-loop submit).

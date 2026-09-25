@@ -72,10 +72,35 @@ def main():
             print("\n[Apply CLI] Cancelled by user — no form autofill performed.")
             sys.exit(0)
 
-        # Update database status upon successful fill completion
+        # FILLED ≠ SUBMITTED: the application status machine tracks the real
+        # lifecycle. Mark 'applied' on the JOB only when the user confirms they
+        # actually clicked Submit (previously set unconditionally on fill — §8.11).
         if status_result in ("filled", "filled_generic"):
-            database.update_job_status(job_id, "applied")
-            print(f"\n[Apply CLI] Success! Database job #{job_id} status updated to 'applied'.")
+            print("\n[Apply CLI] Form filled successfully.")
+            if not database.update_application_status(job_id, "ready_to_submit"):
+                # No application row yet (record_application not called) — create one
+                database.save_application(
+                    job_id, url, "ready_to_submit", "Filled via browser runner; submit pending."
+                )
+                print("[Apply CLI] Application recorded with status 'ready_to_submit'.")
+            else:
+                print("[Apply CLI] Application status: 'ready_to_submit'.")
+
+            try:
+                confirm = input("Did you click Submit in the browser? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                confirm = "n"
+                print()
+
+            if confirm == "y":
+                database.update_application_status(job_id, "submitted")
+                database.update_job_status(job_id, "applied")
+                print(f"[Apply CLI] Confirmed — application marked 'submitted'; job #{job_id} marked 'applied'.")
+            else:
+                print(
+                    f"[Apply CLI] Not confirmed — application stays 'ready_to_submit'; "
+                    f"job #{job_id} left as '{status}' (advance it later from the dashboard)."
+                )
 
     except Exception as exc:
         print(f"\nError executing application flow: {exc}")

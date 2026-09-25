@@ -593,6 +593,100 @@ def test_legacy_db_migration() -> bool:
     return True
 
 
+def test_board_api_ref_extraction() -> bool:
+    """§8.9 build: Greenhouse/Lever job URLs must map to (platform, slug, job_id);
+    Ashby and unrelated URLs must not (no API → None, scraped fallback)."""
+    from career_copilot import tools
+    assert tools._extract_board_api_ref(
+        "https://boards.greenhouse.io/acme-corp/jobs/4102345") == ("greenhouse", "acme-corp", "4102345")
+    assert tools._extract_board_api_ref(
+        "https://greenhouse.io/acme/jobs/99") == ("greenhouse", "acme", "99")
+    assert tools._extract_board_api_ref(
+        "https://jobs.lever.co/techco/4f9c1a2b-1234-5678-9abc-def012345678") == (
+        "lever", "techco", "4f9c1a2b-1234-5678-9abc-def012345678")
+    assert tools._extract_board_api_ref("https://jobs.ashbyhq.com/acme/abc-123") is None
+    assert tools._extract_board_api_ref("https://example.com/careers/python-dev") is None
+    assert tools._extract_board_api_ref("https://boards.greenhouse.io/only-slug") is None
+    print("  [PASS] board API ref extraction (greenhouse/lever only, others fall back)")
+    return True
+
+
+def test_board_api_enrichment() -> bool:
+    """§8.9 build: official board-API payloads normalize to authoritative job
+    fields; API failure or unsupported board → None (never raises)."""
+    from career_copilot import tools
+    calls: list[str] = []
+    original = tools.fetch_json
+
+    def _fake(url, **kwargs):
+        calls.append(url)
+        if "boards-api.greenhouse.io" in url:
+            return {"title": "Senior Python Engineer",
+                    "content": "<p>Build <b>APIs</b> with Django &amp; FastAPI.</p>",
+                    "location": {"name": "Chennai, India"}}
+        if "api.lever.co" in url:
+            return {"text": "ML Engineer", "descriptionPlain": "We build models.",
+                    "lists": [{"text": "Requirements", "content": "<li>Python</li><li>ML</li>"}],
+                    "categories": {"location": "Remote"}}
+        raise RuntimeError(f"unexpected url {url}")
+
+    tools.fetch_json = _fake
+    try:
+        gh = tools._fetch_board_job("https://boards.greenhouse.io/acme-corp/jobs/4102345")
+        assert gh and gh["title"] == "Senior Python Engineer"
+        assert gh["company"] == "Acme Corp" and gh["location"] == "Chennai, India"
+        assert "APIs" in gh["description"] and "<p>" not in gh["description"], \
+            "HTML must be stripped from greenhouse content"
+
+        lv = tools._fetch_board_job("https://jobs.lever.co/techco/abc-def-123")
+        assert lv and lv["title"] == "ML Engineer" and lv["location"] == "Remote"
+        assert "We build models" in lv["description"] and "Requirements" in lv["description"]
+
+        # Ashby: never calls the API (no ref), returns None
+        n_before = len(calls)
+        assert tools._fetch_board_job("https://jobs.ashbyhq.com/acme/xyz") is None
+        assert len(calls) == n_before
+
+        # API failure → None (scraped fallback), never raises
+        def _down(url, **kwargs):
+            raise ConnectionError("api down")
+        tools.fetch_json = _down
+        assert tools._fetch_board_job("https://boards.greenhouse.io/acme/jobs/1") is None
+    finally:
+        tools.fetch_json = original
+    # Bounded retries/timeout on enrichment calls
+    print("  [PASS] board API enrichment: authoritative fields, graceful degradation")
+    return True
+
+
+def test_ddg_enrichment_wired() -> bool:
+    """§8.9 build: scraped board results must attempt official-API enrichment."""
+    import inspect
+    from career_copilot import tools
+    src = inspect.getsource(tools._search_ddg_job_boards)
+    assert "_fetch_board_job" in src, "DDG board results must enrich via official APIs"
+    assert "or snippet_text" in src, "scraped snippet must remain the fallback"
+    print("  [PASS] DDG board search enriches via official APIs with scraped fallback")
+    return True
+
+
+def test_apply_cli_submit_confirmation() -> bool:
+    """§8.11 honesty: 'applied' on a job must require explicit user confirmation —
+    a FILLED form is not a SUBMITTED application."""
+    import inspect
+    from career_copilot import apply as apply_mod
+    src = inspect.getsource(apply_mod.main)
+    assert "Did you click Submit" in src, "CLI must ask before marking 'applied'"
+    assert 'update_application_status(job_id, "ready_to_submit")' in src, \
+        "filled forms must advance the application to ready_to_submit"
+    assert src.count('update_job_status(job_id, "applied")') == 1, \
+        "job 'applied' must be set in exactly one (confirm-gated) place"
+    assert src.index("input(") < src.index('update_job_status(job_id, "applied")'), \
+        "the confirmation input must precede the 'applied' transition"
+    print("  [PASS] apply CLI gates 'applied' behind explicit submit confirmation")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -616,6 +710,10 @@ REGRESSION_TESTS = [
     test_company_analyzer_dead_domain_shortcircuit,
     test_company_intel_cache_ttl_and_poison,
     test_legacy_db_migration,
+    test_board_api_ref_extraction,
+    test_board_api_enrichment,
+    test_ddg_enrichment_wired,
+    test_apply_cli_submit_confirmation,
 ]
 
 OFFLINE_UNIT_TESTS = [
