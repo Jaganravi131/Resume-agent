@@ -1234,12 +1234,45 @@ def analyze_target_company(company: str, job_url: str, description: str) -> str:
     return intel.summary()
 
 
-def record_application(job_id: int, apply_url: str, resume_text: str, status: str = "drafted") -> str:
+def record_application(job_id: int, apply_url: str, resume_text: str, status: str = "drafted",
+                       title: str = "", company: str = "", pdf_path: str = "") -> str:
     """Record an application draft. The resume payload goes in its own column;
-    `notes` keeps a short human-readable summary (schema-correct storage)."""
+    `notes` keeps a short human-readable summary (schema-correct storage).
+
+    Also appends an immutable entry to the resume version history whenever the
+    resume text CHANGED since the last version recorded for this job — every
+    resume ever sent for an application stays auditable (§8.12 roadmap item).
+    """
     notes = f"Auto-recorded by Career Copilot ({len(resume_text or '')} char tailored resume)."
     database.save_application(job_id, apply_url, status, notes, resume_text=resume_text or "")
-    return f"Application for job {job_id} recorded with status '{status}'."
+    version_note = ""
+    if resume_text:
+        latest = database.get_latest_resume_version(job_id)
+        if not latest or latest.get("resume_text") != resume_text:
+            version = database.save_resume_version(
+                job_id, title, company, resume_text, pdf_path, generator="record_application"
+            )
+            version_note = f" Resume saved as version v{version} (immutable history)."
+    return f"Application for job {job_id} recorded with status '{status}'.{version_note}"
+
+
+def get_resume_version_history(job_id: int) -> str:
+    """List the immutable resume version history for a job's application — which
+    tailored resume (version, ATS score, generator, PDF) was prepared when.
+    Use before re-tailoring, or when you need to know exactly which resume was
+    sent to this employer."""
+    versions = database.get_resume_versions(job_id)
+    if not versions:
+        return f"No resume versions recorded yet for job {job_id}."
+    lines = [f"Resume version history for job {job_id} ({len(versions)} version(s), newest first):"]
+    for v in versions:
+        score = f"ATS {v['ats_score']}" if v["ats_score"] is not None else "ATS n/a"
+        pdf = f" | PDF: {v['pdf_path']}" if v.get("pdf_path") else ""
+        lines.append(
+            f"- v{v['version']}: {v['title']} at {v['company']} | {score} | "
+            f"{v['generator']} | {v['text_length']} chars | {v['created_at']}{pdf}"
+        )
+    return "\n".join(lines)
 
 
 def build_daily_digest(query: str, generate_full_packets: bool = False) -> dict:

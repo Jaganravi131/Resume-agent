@@ -578,6 +578,11 @@ def test_legacy_db_migration() -> bool:
             cols = {r[1] for r in c.cursor().execute("PRAGMA table_info(applications)").fetchall()}
         assert "resume_text" in cols and "notes" in cols, \
             f"migration must add resume_text while preserving notes, cols={cols}"
+        with database.get_connection() as c:
+            tables = {r[0] for r in c.cursor().execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "resume_versions" in tables, \
+            "init_db on a legacy DB must also create resume_versions"
 
         # Legacy row preserved + writable through the new API
         database.save_application(1, "https://a.example", "submitted", "new note", resume_text="NEW-BODY")
@@ -590,6 +595,61 @@ def test_legacy_db_migration() -> bool:
         database.DB_PATH = original_path
         os.unlink(tmp.name)
     print("  [PASS] legacy DB migrates cleanly (resume_text added, idempotent, rows preserved)")
+    return True
+
+
+def test_resume_version_history() -> bool:
+    """Build: immutable per-application resume versions (§8.12 roadmap item)."""
+    database.init_db()
+    job_id = 900_000_000 + int.from_bytes(os.urandom(2), "big")  # never a real FK
+    assert database.get_resume_versions(job_id) == []
+    assert database.get_latest_resume_version(job_id) is None
+
+    v1 = database.save_resume_version(job_id, "Backend Engineer", "Acme",
+                                      "RESUME-V1-BODY", pdf_path="/x/v1.pdf",
+                                      ats_score=72, generator="fallback_template")
+    v2 = database.save_resume_version(job_id, "Backend Engineer", "Acme",
+                                      "RESUME-V2-BODY", ats_score=88, generator="gemini")
+    assert (v1, v2) == (1, 2), "versions must increment per job from 1"
+
+    versions = database.get_resume_versions(job_id)
+    assert [v["version"] for v in versions] == [2, 1], "newest first"
+    assert versions[0]["ats_score"] == 88 and versions[0]["generator"] == "gemini"
+    assert versions[1]["text_length"] == len("RESUME-V1-BODY")
+
+    latest = database.get_latest_resume_version(job_id)
+    assert latest["version"] == 2 and latest["resume_text"] == "RESUME-V2-BODY"
+    # A different job has an independent version counter
+    assert database.save_resume_version(job_id + 1, "T", "C", "BODY") == 1
+    print("  [PASS] resume version history: immutable, incrementing, newest-first")
+    return True
+
+
+def test_record_application_writes_versions() -> bool:
+    """Build: record_application appends a version ONLY when the resume text
+    changed (no duplicate noise, immutable history rides the application)."""
+    from career_copilot import tools
+    database.init_db()
+    url = f"https://cleanup-test.example/versions-{os.urandom(4).hex()}"
+    database.add_job("Version Wire Job", "Acme", "Remote", url, "desc")
+    with database.get_connection() as conn:
+        job_id = conn.cursor().execute("SELECT id FROM jobs WHERE url=?", (url,)).fetchone()[0]
+
+    out1 = tools.record_application(job_id, "https://apply.example/v", "BODY-ONE",
+                                    title="Backend Engineer", company="Acme")
+    assert "v1" in out1, f"first record must create v1, got {out1!r}"
+    out2 = tools.record_application(job_id, "https://apply.example/v", "BODY-ONE")
+    assert "version" not in out2.split(".", 1)[-1] or "v1" in out1, "unchanged text must not duplicate"
+    assert len(database.get_resume_versions(job_id)) == 1, \
+        "unchanged resume text must not create a duplicate version"
+    tools.record_application(job_id, "https://apply.example/v", "BODY-TWO-IMPROVED")
+    assert len(database.get_resume_versions(job_id)) == 2, \
+        "changed resume text must create v2"
+
+    history = tools.get_resume_version_history(job_id)
+    assert "v2" in history and "v1" in history and "Backend Engineer at Acme" in history
+    assert "No resume versions" in tools.get_resume_version_history(424242001)
+    print("  [PASS] record_application maintains immutable resume versions on change")
     return True
 
 
@@ -710,6 +770,8 @@ REGRESSION_TESTS = [
     test_company_analyzer_dead_domain_shortcircuit,
     test_company_intel_cache_ttl_and_poison,
     test_legacy_db_migration,
+    test_resume_version_history,
+    test_record_application_writes_versions,
     test_board_api_ref_extraction,
     test_board_api_enrichment,
     test_ddg_enrichment_wired,

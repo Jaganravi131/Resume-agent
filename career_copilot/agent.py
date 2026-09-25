@@ -11,6 +11,7 @@ from .tools import (
     generate_tailored_resume,
     recommend_projects,
     record_application,
+    get_resume_version_history,
     search_job_postings,
     store_scouted_job,
     analyze_target_company,
@@ -111,7 +112,10 @@ def run_career_pipeline(query: str = "Python Developer", max_packets: int = 5) -
                 "job_id": job_id,
                 "title": title,
                 "company": company,
-                "application": record_application(job_id, url, packet["resume_text"]),
+                "application": record_application(
+                    job_id, url, packet["resume_text"],
+                    title=title, company=company, pdf_path=packet.get("resume_pdf", ""),
+                ),
                 "match_percentage": packet["match_percentage"],
                 "resume": packet["resume_text"],
                 "resume_pdf": packet["resume_pdf"],
@@ -180,9 +184,11 @@ application_agent = AgentFactory(
     description="Records application drafts and submission-ready application details.",
     instruction=(
         "Use record_application to track where the resume was sent and what status it has. If actual submission "
-        "is not available, maintain a clean draft record for later follow-up."
+        "is not available, maintain a clean draft record for later follow-up. "
+        "Use get_resume_version_history to recall exactly which tailored resume (version, ATS score) "
+        "was prepared for a given job before re-tailoring or discussing an application."
     ),
-    tools=[record_application],
+    tools=[record_application, get_resume_version_history],
 )
 
 project_agent = AgentFactory(

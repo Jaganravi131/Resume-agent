@@ -1,6 +1,6 @@
 # Career Copilot — Evals Results
 
-> Generated 2026-09-25 15:21 UTC · offline-first suite
+> Generated 2026-09-25 15:40 UTC · offline-first suite
 
 | Check | Result | Score | Details |
 |---|---|---|---|
