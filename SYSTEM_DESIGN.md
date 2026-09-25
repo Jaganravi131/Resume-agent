@@ -75,7 +75,7 @@ All issues from `PROJECT_REPORT.md` §7/§8 plus post-audit sweeps. Each row: **
 |---|---|---|---|
 | R-1 | **Live paths unexercised** — real job APIs, Gemini, SMTP, Telegram/WhatsApp, Playwright runs never tested here (sandbox offline) | 🟠 | Do the first live run (`scheduler --once`) on a keyed machine; all offline-verifiable behavior is pinned |
 | R-2 | **PII PDFs in git history** — untracked going forward, but present in history | 🟠 | User decision: `git filter-repo` + force-push before going public (see `career_copilot/resume/README.md`) |
-| R-3 | **DDG scraping is a stopgap** — parser hardened (attribute-order tolerant), but official Greenhouse/Lever/Ashby APIs are more durable (need company slugs) | 🟡 | Accepted for now; feature-class upgrade |
+| R-3 | **Board jobs now enriched via official APIs** — Greenhouse/Lever public JSON provides authoritative title/company/location/description; DDG scraping remains only as discovery + fallback (hardened, attribute-order tolerant). Ashby has no public per-posting API (scraped data + fallback) | 🟡 | Partially addressed; full migration would need company slugs |
 | R-4 | **Never auto-submits** — forms are filled, user clicks submit | — | **Intentional** (human-in-the-loop, §8.12) |
 | R-5 | Roadmap features absent (vector-search relevance, resume version history, LinkedIn Easy Apply, voice mock interviews, cloud deploy) | — | Feature work, see `PORTFOLIO_ROADMAP.md` |
 
@@ -164,6 +164,7 @@ sequenceDiagram
     SCH->>WF: run_daily_cycle(query)
     WF->>DB: init_db (idempotent + migrations)
     WF->>SRC: search_job_postings(query)
+    Note over SRC: Remotive/Jobicy/RemoteOK direct APIs;<br/>DDG board results enriched via official<br/>Greenhouse/Lever JSON APIs (scraped = fallback)
     SRC-->>WF: jobs[] (dedup'd; provider errors counted)
     Note over WF,TR: PHASE 1 — coarse pass, NO LLM (use_llm=False)
     WF->>TR: filter_jobs_by_relevance(all jobs)
@@ -344,6 +345,7 @@ validated against allowlists (`update_job_status`, `update_application_status`);
 | **All** notify channels down | jobs stay `found`, retried next cycle | code + semantics test |
 | Job API down | provider counted; other providers serve; error logged | DDG failure accounting |
 | DDG markup changes | attribute-order-tolerant parser keeps extracting | `test_ddg_parser_attribute_order_tolerant` |
+| Board enrichment API down | scraped snippet data serves; search never fails | `test_board_api_enrichment` |
 | Company site dead | 1 fetch (not 5), empty intel **not cached** | cache TTL/anti-poison tests |
 | Malformed `MIN_MATCH_PERCENTAGE` | falls back to 40, never crashes digest | `threshold_safety` |
 | Non-ASCII / 300-char job title | unique, ≤100-char filename | `resume_filename_safety` |

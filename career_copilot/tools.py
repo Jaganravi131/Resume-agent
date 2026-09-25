@@ -342,6 +342,71 @@ def _extract_ddg_results(raw_html: str) -> tuple[list[str], list[str], list[str]
     return links, titles, snippets
 
 
+def _extract_board_api_ref(url: str) -> tuple[str, str, str] | None:
+    """Extract (platform, company_slug, job_id) from a Greenhouse/Lever job URL.
+
+    Greenhouse: boards.greenhouse.io/{slug}/jobs/{id}
+    Lever:      jobs.lever.co/{slug}/{posting_id}
+    Ashby has no stable public per-posting API, so it returns None (scraped
+    snippet data remains the fallback there).
+    """
+    import urllib.parse
+    parts = [p for p in urllib.parse.urlparse(url).path.strip("/").split("/") if p]
+    host = urllib.parse.urlparse(url).netloc.lower()
+    if "greenhouse.io" in host and len(parts) >= 3 and parts[1] == "jobs":
+        return ("greenhouse", parts[0], parts[2])
+    if "lever.co" in host and len(parts) >= 2:
+        return ("lever", parts[0], parts[1])
+    return None
+
+
+def _fetch_board_job(url: str) -> dict | None:
+    """Fetch authoritative job data from the board's official public JSON API.
+
+    Returns {title, company, location, description} or None on ANY failure —
+    callers fall back to the scraped snippet data. The search must never fail
+    because the (optional) enrichment API is down (§8.9 upgrade).
+    """
+    ref = _extract_board_api_ref(url)
+    if not ref:
+        return None
+    platform, slug, job_id = ref
+    try:
+        if platform == "greenhouse":
+            data = fetch_json(
+                f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}",
+                timeout=10, max_retries=2,
+            )
+            if isinstance(data, dict) and data.get("title"):
+                description = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", data.get("content") or "")).strip()
+                return {
+                    "title": str(data["title"]).strip(),
+                    "company": slug.replace("-", " ").title(),
+                    "location": str((data.get("location") or {}).get("name", "")).strip(),
+                    "description": description,
+                }
+        elif platform == "lever":
+            data = fetch_json(
+                f"https://api.lever.co/v0/postings/{slug}/{job_id}",
+                timeout=10, max_retries=2,
+            )
+            if isinstance(data, dict) and data.get("text"):
+                chunks = [str(data.get("descriptionPlain") or "")]
+                for lst in data.get("lists") or []:
+                    chunks.append(str(lst.get("text", "")))
+                    chunks.append(re.sub(r"<[^>]+>", " ", str(lst.get("content") or "")))
+                description = re.sub(r"\s+", " ", " ".join(c for c in chunks if c)).strip()
+                return {
+                    "title": str(data["text"]).strip(),
+                    "company": slug.replace("-", " ").title(),
+                    "location": str((data.get("categories") or {}).get("location", "")).strip(),
+                    "description": description,
+                }
+    except Exception as exc:
+        logger.info("Board API enrichment unavailable for %s (%s) — using scraped data", url, exc)
+    return None
+
+
 def _search_ddg_job_boards(query: str) -> list[dict]:
     """Search DuckDuckGo for job listings hosted on Greenhouse, Lever, and Ashby."""
     import urllib.parse
@@ -442,12 +507,17 @@ def _search_ddg_job_boards(query: str) -> list[dict]:
 
                 # Deduplicate within this search pass
                 if not any(r["url"] == link for r in results):
+                    # Official board APIs beat scraped snippets: Greenhouse/Lever
+                    # expose public per-job JSON — use it for authoritative
+                    # title/company/location/description (the 120-char snippet was
+                    # poor relevance-scoring input). Falls back to scraped data.
+                    enriched = _fetch_board_job(link)
                     results.append({
-                        "title": job_title,
-                        "company": company,
-                        "location": "Remote",
+                        "title": (enriched or {}).get("title") or job_title,
+                        "company": (enriched or {}).get("company") or company,
+                        "location": (enriched or {}).get("location") or "Remote",
                         "url": link,
-                        "description": snippet_text,
+                        "description": (enriched or {}).get("description") or snippet_text,
                         "source": "duckduckgo",
                         "apply_url": link,
                     })
