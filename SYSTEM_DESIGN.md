@@ -77,7 +77,7 @@ All issues from `PROJECT_REPORT.md` §7/§8 plus post-audit sweeps. Each row: **
 | R-2 | **PII PDFs in git history** — untracked going forward, but present in history | 🟠 | User decision: `git filter-repo` + force-push before going public (see `career_copilot/resume/README.md`) |
 | R-3 | **Board jobs now enriched via official APIs** — Greenhouse/Lever public JSON provides authoritative title/company/location/description; DDG scraping remains only as discovery + fallback (hardened, attribute-order tolerant). Ashby has no public per-posting API (scraped data + fallback) | 🟡 | Partially addressed; full migration would need company slugs |
 | R-4 | **Never auto-submits** — forms are filled, user clicks submit | — | **Intentional** (human-in-the-loop, §8.12) |
-| R-5 | Roadmap features absent (vector-search relevance, resume version history, LinkedIn Easy Apply, voice mock interviews, cloud deploy) | — | Feature work, see `PORTFOLIO_ROADMAP.md` |
+| R-5 | Roadmap features absent (vector-search relevance, LinkedIn Easy Apply, voice mock interviews, cloud deploy). **Resume version history: shipped** (immutable `resume_versions` per application) | — | Feature work, see `PORTFOLIO_ROADMAP.md` |
 
 ---
 
@@ -294,7 +294,23 @@ erDiagram
         text intel_json "7-day TTL enforced in code"
         timestamp created_at
     }
+    RESUME_VERSIONS {
+        int id PK
+        int job_id "per-job version counter"
+        text title
+        text company
+        int version "UNIQUE(job_id, version)"
+        text resume_text "immutable snapshot"
+        text pdf_path
+        int ats_score
+        text generator "gemini | fallback_template | record_application"
+        timestamp created_at
+    }
 ```
+
+`record_application` appends a new `resume_versions` row **only when the resume text
+changed** — the history is append-only, so every resume ever sent to an employer stays
+auditable (`get_resume_version_history` tool on the `Application_agent`).
 
 Hygiene: `cleanup_old_records(90d)` with format-safe UTC comparisons; both status columns
 validated against allowlists (`update_job_status`, `update_application_status`);

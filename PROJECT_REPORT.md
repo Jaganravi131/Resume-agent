@@ -431,7 +431,9 @@ Notable observation during testing: the "good match" test reported `category sco
 > removed), §8.7 (`scheduler --once`: cron/systemd-friendly single-run mode), §8.8 (`GITHUB_USERNAME` in `.env.example`),
 > §8.9 (DDG parser rewritten attribute-order tolerant — markup shuffles no longer yield silent zero results; **plus** board
 > jobs are now enriched with authoritative data from the official Greenhouse/Lever public APIs, scraped = fallback),
-> §8.11 additionally: the apply CLI now gates job='applied' behind explicit submit confirmation (filled ≠ submitted),
+> §8.11 additionally: the apply CLI now gates job='applied' behind explicit submit confirmation (filled ≠ submitted);
+> §8.12's resume-versioning gap is closed: immutable per-application `resume_versions` history (append-on-change)
+> with the `get_resume_version_history` agent tool,
 > §8.10 (Jobicy tries the full query phrase before the first-keyword fallback), §8.11 (application status machine:
 > `ALLOWED_APPLICATION_STATUSES` + `update_application_status`, invalid values rejected/coerced). §8.12 stays intentional
 > (human-in-the-loop submit).

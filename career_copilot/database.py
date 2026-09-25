@@ -67,6 +67,21 @@ def init_db():
                 UNIQUE(company)
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS resume_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                title TEXT DEFAULT '',
+                company TEXT DEFAULT '',
+                version INTEGER NOT NULL,
+                resume_text TEXT DEFAULT '',
+                pdf_path TEXT DEFAULT '',
+                ats_score INTEGER,
+                generator TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(job_id, version)
+            )
+        """)
         conn.commit()
 
     # Migration for legacy databases created before the resume_text column
@@ -217,6 +232,67 @@ def update_application_status(job_id, status, apply_url=None):
             )
         conn.commit()
         return cursor.rowcount > 0
+
+
+def save_resume_version(job_id, title, company, resume_text, pdf_path="",
+                        ats_score=None, generator=""):
+    """Append a new resume version for a job (immutable history — versions are
+    never overwritten, so every resume sent for an application stays
+    auditable). Returns the new version number (per-job, starting at 1)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM resume_versions WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        version = row[0]
+        cursor.execute(
+            """
+            INSERT INTO resume_versions
+                (job_id, title, company, version, resume_text, pdf_path, ats_score, generator)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, title or "", company or "", version, resume_text or "",
+             pdf_path or "", ats_score, generator or ""),
+        )
+        conn.commit()
+        return version
+
+
+def get_resume_versions(job_id):
+    """Return all resume versions for a job, newest first, as dicts."""
+    with get_connection() as conn:
+        rows = conn.cursor().execute(
+            """
+            SELECT version, title, company, ats_score, generator, pdf_path,
+                   LENGTH(resume_text), created_at
+            FROM resume_versions WHERE job_id=? ORDER BY version DESC
+            """,
+            (job_id,),
+        ).fetchall()
+    return [
+        {"version": r[0], "title": r[1], "company": r[2], "ats_score": r[3],
+         "generator": r[4], "pdf_path": r[5], "text_length": r[6], "created_at": r[7]}
+        for r in rows
+    ]
+
+
+def get_latest_resume_version(job_id):
+    """Return {version, resume_text, ...} for the newest version, or None."""
+    with get_connection() as conn:
+        row = conn.cursor().execute(
+            """
+            SELECT version, title, company, resume_text, pdf_path, ats_score,
+                   generator, created_at
+            FROM resume_versions WHERE job_id=? ORDER BY version DESC LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"version": row[0], "title": row[1], "company": row[2],
+            "resume_text": row[3], "pdf_path": row[4], "ats_score": row[5],
+            "generator": row[6], "created_at": row[7]}
 
 
 def save_daily_report(report_text):
