@@ -1,0 +1,23 @@
+# Never bake secrets or local state into the image
+career_copilot/.env
+.env
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+career_copilot/generated_resumes/
+career_copilot/screenshots/
+career_copilot/form_memory.json
+career_copilot/resume/*.pdf
+
+.git/
+.github/
+.freebuff/
+*.md
+!README.md

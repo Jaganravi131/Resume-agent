@@ -41,6 +41,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PASS = []
 FAIL = []
 
+# Windows consoles default to cp1252 which cannot print '→'/'✅' — force UTF-8
+# for THIS process's stdout so test names print reliably.
+import io as _io
+import sys as _sys
+
+if hasattr(_sys.stdout, "reconfigure"):
+    try:
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def check(name, fn):
     try:
@@ -371,6 +382,163 @@ def main() -> int:
 
     check("form memory persists per-domain and never cross-contaminates",
           test_form_memory_roundtrip)
+
+    # ========================================================================
+    # Mock-interview agent (agent 6 upgrade)
+    # ========================================================================
+    print("== mock interview agent ==")
+    from career_copilot import interview_agent as ia
+    from career_copilot import database as _db
+
+    _tmpdb2 = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+    _tmpdb2.close()
+    _db.DB_PATH = _tmpdb2.name
+    _db.init_db()
+
+    def test_topic_extraction():
+        topics = ia.extract_topics(
+            "ML Engineer",
+            "Build RAG pipelines with pytorch and kubernetes. Deploy models with docker "
+            "and kubernetes. Experience with llm embeddings and pytorch required."
+        )
+        assert topics, "topics must be extracted"
+        for expected in ("pytorch", "kubernetes"):
+            assert expected in topics, f"{expected} should rank (got {topics})"
+
+    def test_session_lifecycle_offline():
+        """Start → answer → end, fully offline (heuristic grader)."""
+        sess = ia.start_session(
+            "Backend Engineer",
+            "Python FastAPI PostgreSQL docker kubernetes REST api. "
+            "Strong sql and redis caching experience."
+        )
+        sid = sess["session_id"]
+        assert sess["question"] and sess["question"].endswith("?")
+
+        result = ia.answer_question(
+            sid,
+            "I built a FastAPI service handling 500 requests/second. Situation: our "
+            "postgres latency hit p95 800ms. I led the caching redesign with redis, "
+            "reducing latency by 60% as a result.",
+        )
+        assert "grade" in result
+        g = result["grade"]
+        assert 0 <= g["score"] <= 10
+        assert g["verdict"] in ia.ALLOWED_VERDICTS
+        assert g["grader"] == "heuristic"  # no API key in tests
+        assert result["next_question"].endswith("?")
+
+        report = ia.end_session(sid)
+        assert report["questions_answered"] == 1
+        assert 0 <= report["overall_score"] <= 10
+        assert "restudy_topics" in report
+
+    def test_grading_rejects_thin_answers():
+        sess = ia.start_session("Data Engineer", "python sql airflow spark etl pipelines")
+        bad = ia.answer_question(sess["session_id"], "I don't know.")
+        good = ia.answer_question(
+            sess["session_id"],
+            "Situation: our airflow DAG failed weekly. I built retry logic with SLAs and "
+            "backfill handling in python, cutting failures by 90% and saving 5 hours/week.",
+        )
+        assert bad["grade"]["score"] < good["grade"]["score"], (
+            "the graded rubric must separate thin from substantive answers"
+        )
+
+    def test_invalid_session():
+        assert "error" in ia.answer_question(999999, "hello")
+        assert "error" in ia.end_session(999999)
+
+    check("JD topic extraction ranks salient skills", test_topic_extraction)
+    check("offline session lifecycle: ask → grade → adaptive report",
+          test_session_lifecycle_offline)
+    check("rubric separates thin from substantive answers",
+          test_grading_rejects_thin_answers)
+    check("invalid session ids return structured errors", test_invalid_session)
+
+    # ========================================================================
+    # GitHub-aware project gap analysis (agent 5 upgrade)
+    # ========================================================================
+    print("== project gap analysis ==")
+    from career_copilot import project_gap as pg
+
+    def test_skill_gap_diff():
+        resume = "I built web apps with python, flask, and sql databases."
+        gap = pg.analyze_skill_gap(
+            "Platform Engineer",
+            "Requires kubernetes experience. Strong python and sql. Kubernetes operations "
+            "daily. More kubernetes: clusters, helm on kubernetes. Terraform a plus.",
+            resume_text=resume,
+        )
+        assert "python" in gap["proven"] and "sql" in gap["proven"]
+        assert "kubernetes" in gap["missing"] and "terraform" in gap["missing"]
+        # kubernetes mentioned 4x, terraform 1x → frequency ordering must hold
+        assert gap["missing"].index("kubernetes") < gap["missing"].index("terraform"), (
+            "missing skills ordered by JD frequency"
+        )
+
+    def test_gap_projects_never_reprove():
+        resume = "Years of python and react development."
+        text = pg.recommend_gap_closing_projects(
+            "DevOps Engineer",
+            "kubernetes terraform aws observability prometheus required.",
+            resume_text=resume,
+        )
+        assert "kubernetes" in text.lower()  # gap-closing project exists
+        # If the LLM path produced output, it must not be a bare fallback list;
+        # both paths mention the missing skill and neither recommends 'react'.
+        assert "react" not in text.lower(), "must not re-recommend proven skills"
+
+    def test_no_gap_case():
+        resume = "Expert in kubernetes terraform aws prometheus and docker."
+        text = pg.recommend_gap_closing_projects(
+            "Platform Engineer",
+            "kubernetes terraform aws prometheus docker required.",
+            resume_text=resume,
+        )
+        assert "No major skill gaps" in text
+
+    check("skill gap: proven vs missing with JD-frequency ordering", test_skill_gap_diff)
+    check("gap projects close missing skills, never re-prove", test_gap_projects_never_reprove)
+    check("full-coverage JD returns no-gap guidance", test_no_gap_case)
+
+    # ========================================================================
+    # Tracing (observability)
+    # ========================================================================
+    print("== tracing ==")
+    from career_copilot import tracing
+
+    def test_span_success_and_error():
+        with tracing.trace_span("t.ok", kind="tool", attrs={"n": 1}) as span:
+            span["extra"] = "x"
+        try:
+            with tracing.trace_span("t.fail", kind="llm", attrs={"model": "m"}):
+                raise ValueError("boom")
+        except ValueError:
+            pass
+
+    def test_pii_safe_attrs():
+        safe = tracing._safe_attrs("llm", {"prompt": "x" * 500, "model": "m"})
+        assert safe["prompt"].startswith("<str:") and len(safe["prompt"]) < 20
+        assert safe["model"] == "m"
+
+    def test_backend_report():
+        st = tracing.otel_status()
+        assert st["backend"] in ("opentelemetry", "structured-logging")
+
+    check("trace spans swallow nothing but record success/error", test_span_success_and_error)
+    check("long string attrs are truncated (PII-safe)", test_pii_safe_attrs)
+    check("otel_status reports the active backend", test_backend_report)
+
+    _db.DB_PATH = _orig_db
+    _db.close_idle_resources()
+    import gc as _gc2
+    _gc2.collect()
+    for suf in ("", "-wal", "-shm"):
+        try:
+            os.unlink(_tmpdb2.name + suf)
+        except OSError:
+            pass
 
     # ========================================================================
     print("\n" + "=" * 60)

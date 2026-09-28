@@ -82,6 +82,14 @@ def _lazy_register() -> None:
     _register("list_stale_applications", lambda days=14: get_stale_applications(days=days))
     _register("build_follow_up_digest", lambda days=14: build_follow_up_digest(days=days))
     _register("get_outcome_stats", database.get_outcome_stats)
+    from .interview_agent import answer_question, end_session, start_session
+    from .project_gap import analyze_skill_gap, recommend_gap_closing_projects
+
+    _register("start_mock_interview", lambda job_title, description: start_session(job_title, description))
+    _register("answer_mock_interview", lambda session_id, answer, job_title="", description="": answer_question(session_id, answer, job_title, description))
+    _register("end_mock_interview", end_session)
+    _register("analyze_skill_gap", lambda job_title, description: analyze_skill_gap(job_title, description))
+    _register("recommend_gap_closing_projects", lambda job_title, description, company="": recommend_gap_closing_projects(job_title, description, company))
 
 
 def notifier_notify() -> str:
@@ -104,6 +112,11 @@ TOOL_SPECS: dict[str, str] = {
     "list_stale_applications": '{"days": 14} — submitted applications with no outcome in N days (follow-up candidates)',
     "build_follow_up_digest": '{"days": 14} — stale applications each with a ready-to-send follow-up email draft',
     "get_outcome_stats": "{} — aggregate outcome counts (interviews, rejections, ghosting...) across all applications",
+    "start_mock_interview": '{"job_title": "<role>", "description": "<job description>"} — open an adaptive mock-interview session and get the first question',
+    "answer_mock_interview": '{"session_id": <int>, "answer": "<the candidate answer>", "job_title": "<role>", "description": "<jd>"} — grade an answer 0-10 with feedback and get the next (adaptive) question',
+    "end_mock_interview": '{"session_id": <int>} — close a session: overall score, strongest/weakest topics, re-study list',
+    "analyze_skill_gap": '{"job_title": "<role>", "description": "<jd>"} — proven vs missing skills by diffing the JD against GitHub repos (or resume)',
+    "recommend_gap_closing_projects": '{"job_title": "<role>", "description": "<jd>", "company": "<optional>"} — projects that close the actual missing skills, never re-recommending proven ones',
 }
 
 
@@ -349,13 +362,22 @@ def _plan(goal: str, max_steps: int, query_hint: str) -> list[dict]:
 
 
 def _execute(step: dict) -> StepResult:
+    from .tracing import trace_span
+
     tool = TOOL_REGISTRY[step["tool"]]
-    try:
-        result = tool(**step["args"])
-        return StepResult(step=step, tool=step["tool"], ok=True, result=result)
-    except Exception as exc:  # noqa: BLE001 — structured errors, never raise
-        logger.warning("tool %s failed: %s", step["tool"], exc)
-        return StepResult(step=step, tool=step["tool"], ok=False, error=str(exc)[:500])
+    # PII-safe: record arg NAMES + shapes, never values.
+    arg_shape = {k: type(v).__name__ for k, v in step.get("args", {}).items()}
+    with trace_span(
+        f"tool.{step['tool']}", kind="tool", attrs={"tool": step["tool"], "args": json.dumps(arg_shape)}
+    ) as span:
+        try:
+            result = tool(**step["args"])
+            span["ok"] = True
+            return StepResult(step=step, tool=step["tool"], ok=True, result=result)
+        except Exception as exc:  # noqa: BLE001 — structured errors, never raise
+            span["ok"] = False
+            logger.warning("tool %s failed: %s", step["tool"], exc)
+            return StepResult(step=step, tool=step["tool"], ok=False, error=str(exc)[:500])
 
 
 def _reflect(goal: str, run: AgentRun, remaining: list[dict]) -> dict:

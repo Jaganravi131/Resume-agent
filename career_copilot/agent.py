@@ -29,6 +29,8 @@ from .follow_up_agent import (
     get_stale_applications,
     record_application_outcome,
 )
+from .interview_agent import answer_question, end_session, start_session
+from .project_gap import analyze_skill_gap, recommend_gap_closing_projects
 from . import database, notifier
 
 # Load .env on module import so ADK mode gets env vars
@@ -208,17 +210,29 @@ application_agent = AgentFactory(
 project_agent = AgentFactory(
     model=get_gemini_model(),
     name="Project_recommender_agent",
-    description="Suggests company-aligned portfolio projects that close key skill gaps.",
-    instruction="Use recommend_projects with title, description, company name, and job URL to propose strategic project ideas.",
-    tools=[recommend_projects],
+    description="Suggests portfolio projects that close real, evidence-based skill gaps.",
+    instruction=(
+        "Use analyze_skill_gap first to diff the job description against the candidate's GitHub "
+        "repos (or resume) and identify genuinely MISSING skills. Then use "
+        "recommend_gap_closing_projects for projects that close those gaps — never re-recommending "
+        "skills the candidate has already proven. Cite the evidence (which repos proved what)."
+    ),
+    tools=[recommend_projects, analyze_skill_gap, recommend_gap_closing_projects],
 )
 
 prep_agent = AgentFactory(
     model=get_gemini_model(),
     name="Preparation_agent",
-    description="Builds interview preparation plans from job descriptions.",
-    instruction="Use create_preparation_plan to generate daily prep tasks and practice topics.",
-    tools=[create_preparation_plan],
+    description="Builds interview preparation plans and runs adaptive mock interviews.",
+    instruction=(
+        "Use create_preparation_plan for a 7-day prep plan. For realistic practice, run a mock "
+        "interview: start_mock_interview opens a session and returns the first question; present "
+        "it to the user, then answer_mock_interview with THEIR answer to grade it (0-10 with "
+        "feedback) and get the next question, which adapts toward their weakest topics. Use "
+        "end_mock_interview for the closing report with a re-study list. Never invent the user's "
+        "answers yourself — wait for their actual reply between questions."
+    ),
+    tools=[create_preparation_plan, start_session, answer_question, end_session],
 )
 
 profile_agent = AgentFactory(

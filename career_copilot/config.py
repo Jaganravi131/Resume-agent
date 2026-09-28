@@ -93,33 +93,44 @@ def call_gemini(
     errors: list[str] = []
     for model in get_model_chain():
         for attempt in range(1, max_attempts_per_model + 1):
-            try:
-                client = _get_genai_client()
-                config_kwargs: dict = {}
-                if json_mode:
-                    config_kwargs["response_mime_type"] = "application/json"
-                if temperature is not None:
-                    config_kwargs["temperature"] = temperature
-                config = None
-                if config_kwargs:
-                    from google.genai import types  # lazy: only needed with config
-                    config = types.GenerateContentConfig(**config_kwargs)
+            # Tracing: spans are emitted even without OTel (structured logs),
+            # PII-safe (sizes only, never prompt/response text).
+            from .tracing import trace_span
 
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config,
-                )
-                text = (response.text or "").strip()
-                if not text:
-                    raise RuntimeError("empty response body")
-                return text
-            except Exception as exc:
-                errors.append(f"{model}#attempt{attempt}: {exc}")
-                logger.warning(
-                    "Gemini call failed on %s (attempt %d/%d): %s",
-                    model, attempt, max_attempts_per_model, exc,
-                )
+            with trace_span(
+                "llm.call_gemini", kind="llm",
+                attrs={"model": model, "attempt": attempt,
+                       "prompt_chars": len(prompt), "json_mode": json_mode},
+            ) as _span:
+                try:
+                    client = _get_genai_client()
+                    config_kwargs: dict = {}
+                    if json_mode:
+                        config_kwargs["response_mime_type"] = "application/json"
+                    if temperature is not None:
+                        config_kwargs["temperature"] = temperature
+                    config = None
+                    if config_kwargs:
+                        from google.genai import types  # lazy: only needed with config
+                        config = types.GenerateContentConfig(**config_kwargs)
+
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    text = (response.text or "").strip()
+                    if not text:
+                        raise RuntimeError("empty response body")
+                    _span["response_chars"] = len(text)
+                    return text
+                except Exception as exc:
+                    errors.append(f"{model}#attempt{attempt}: {exc}")
+                    logger.warning(
+                        "Gemini call failed on %s (attempt %d/%d): %s",
+                        model, attempt, max_attempts_per_model, exc,
+                    )
+                    _span["error"] = str(exc)[:200]
 
     raise RuntimeError("All models in chain failed -> " + " | ".join(errors))
 

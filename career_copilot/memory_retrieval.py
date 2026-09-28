@@ -361,6 +361,11 @@ def semantic_search(query: str, *, top_k: int = 5, mode: str = "auto") -> dict:
     ``mode`` forces one backend; "auto" uses vector embeddings when a key is
     configured and falls back to TF-IDF on any failure.
     """
+    import time as _time
+
+    from .tracing import trace_span
+
+    _t0 = _time.perf_counter()
     query = (query or "").strip()
     corpus = _build_corpus()
     if not corpus or not query:
@@ -397,16 +402,23 @@ def semantic_search(query: str, *, top_k: int = 5, mode: str = "auto") -> dict:
                                 meta=item["meta"],
                             ))
                     scored.sort(key=lambda r: r.score, reverse=True)
-                    return {
-                        "mode": "vector",
-                        "results": [r.as_dict() for r in scored[:top_k] if r.score > 0.15],
-                    }
+                    results = [r.as_dict() for r in scored[:top_k] if r.score > 0.15]
+                    from .tracing import trace_retrieval
+
+                    trace_retrieval("vector", query, len(results),
+                                    duration_ms=(_time.perf_counter() - _t0) * 1000)
+                    return {"mode": "vector", "results": results}
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("query embedding failed — tfidf fallback: %s", exc)
         except Exception as exc:  # noqa: BLE001
             logger.warning("vector path failed — tfidf fallback: %s", exc)
 
-    return {"mode": "tfidf", "results": [r.as_dict() for r in _tfidf_search(corpus, query, top_k)]}
+    tfidf_results = [r.as_dict() for r in _tfidf_search(corpus, query, top_k)]
+    from .tracing import trace_retrieval
+
+    trace_retrieval("tfidf", query, len(tfidf_results),
+                    duration_ms=(_time.perf_counter() - _t0) * 1000)
+    return {"mode": "tfidf", "results": tfidf_results}
 
 
 def memory_stats() -> dict:
