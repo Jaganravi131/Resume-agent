@@ -24,6 +24,11 @@ from .resume_evaluator import (
 )
 from .autofill_helpers import get_autofill_mapping
 from .browser_runner import run_application_flow
+from .follow_up_agent import (
+    build_follow_up_digest,
+    get_stale_applications,
+    record_application_outcome,
+)
 from . import database, notifier
 
 # Load .env on module import so ADK mode gets env vars
@@ -186,9 +191,18 @@ application_agent = AgentFactory(
         "Use record_application to track where the resume was sent and what status it has. If actual submission "
         "is not available, maintain a clean draft record for later follow-up. "
         "Use get_resume_version_history to recall exactly which tailored resume (version, ATS score) "
-        "was prepared for a given job before re-tailoring or discussing an application."
+        "was prepared for a given job before re-tailoring or discussing an application. "
+        "Use record_application_outcome to log real-world results (interview, rejection, ghosted...) as they "
+        "happen — this is how the system learns. Use list_stale_applications to find submitted applications "
+        "with no response, and build_follow_up_digest to draft polite follow-up emails for them."
     ),
-    tools=[record_application, get_resume_version_history],
+    tools=[
+        record_application,
+        get_resume_version_history,
+        record_application_outcome,
+        get_stale_applications,
+        build_follow_up_digest,
+    ],
 )
 
 project_agent = AgentFactory(

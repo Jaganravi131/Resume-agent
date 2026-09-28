@@ -10,12 +10,71 @@ imports cleanly and ``run_application_flow`` returns an error dict.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
 logger = logging.getLogger("career_copilot.browser_runner")
+
+# ---------------------------------------------------------------------------
+# Form memory: learned selector mappings per ATS domain
+# ---------------------------------------------------------------------------
+
+_FORM_MEMORY_PATH = Path(__file__).resolve().parent / "form_memory.json"
+
+
+def _domain_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc.lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def load_form_memory(url: str) -> dict:
+    """Return learned field→selector mappings for this domain (or {})."""
+    domain = _domain_of(url)
+    if not domain or not _FORM_MEMORY_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_FORM_MEMORY_PATH.read_text(encoding="utf-8"))
+        return data.get(domain, {})
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_form_memory(url: str, learned: dict[str, str]) -> None:
+    """Persist working field→selector mappings for this domain (merged)."""
+    domain = _domain_of(url)
+    if not domain or not learned:
+        return
+    try:
+        data = {}
+        if _FORM_MEMORY_PATH.exists():
+            data = json.loads(_FORM_MEMORY_PATH.read_text(encoding="utf-8"))
+        entry = data.get(domain, {})
+        entry.update({k: v for k, v in learned.items() if k and v})
+        data[domain] = entry
+        _FORM_MEMORY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        logger.info("Form memory updated for %s (%d mappings)", domain, len(entry))
+    except OSError as exc:
+        logger.warning("Could not persist form memory: %s", exc)
+
+
+def _fill_with_memory_then_fallback(
+    page: "Page", field_key: str, learned_selectors: list[str], fallback_selector: str, value: str
+) -> str | None:
+    """Try learned selectors first, then the ATS default. Returns the selector
+    that worked (for memory persistence) or None."""
+    for sel in learned_selectors + fallback_selector.split(","):
+        sel = sel.strip()
+        if sel and _try_fill_field(page, sel, value):
+            return sel
+    return None
 
 # ---------------------------------------------------------------------------
 # Playwright availability check
@@ -275,15 +334,23 @@ def run_application_flow(packet: dict, headless: bool = False, timeout_ms: int =
                     print("[Browser Runner] ⚠ Timeout or page closed waiting for verification resolution. Proceeding anyway...")
 
             # --- Fill form fields ---
+            memory = load_form_memory(apply_url)
+            learned_this_run: dict[str, str] = {}
             if site_mapping and site_mapping.get("fill_instructions"):
                 print(f"[Browser Runner] Detected platform: {site_mapping['platform']}")
                 fill_instructions = site_mapping["fill_instructions"]
 
                 for field_key, instruction in fill_instructions.items():
-                    selector = instruction["selector"]
                     value = instruction["value"]
-                    if _try_fill_field(page, selector, value):
+                    used = _fill_with_memory_then_fallback(
+                        page, field_key,
+                        memory.get(field_key, "").split(",") if memory.get(field_key) else [],
+                        instruction["selector"],
+                        value,
+                    )
+                    if used:
                         fields_filled.append(field_key)
+                        learned_this_run[field_key] = used
                     else:
                         fields_skipped.append(field_key)
 
@@ -332,8 +399,15 @@ def run_application_flow(packet: dict, headless: bool = False, timeout_ms: int =
                 }
                 for field_key, selector in generic_map.items():
                     value = autofill.get(field_key, "")
-                    if _try_fill_field(page, selector, value):
+                    used = _fill_with_memory_then_fallback(
+                        page, field_key,
+                        memory.get(field_key, "").split(",") if memory.get(field_key) else [],
+                        selector,
+                        value,
+                    )
+                    if used:
                         fields_filled.append(field_key)
+                        learned_this_run[field_key] = used
                     else:
                         fields_skipped.append(field_key)
 
@@ -351,6 +425,10 @@ def run_application_flow(packet: dict, headless: bool = False, timeout_ms: int =
                     f"{len(fields_filled)} fields filled, {len(fields_skipped)} skipped. "
                     f"Review the form in the browser and click Apply/Submit when ready."
                 )
+
+            # --- Persist learned selectors (form memory) ---
+            if learned_this_run:
+                save_form_memory(apply_url, learned_this_run)
 
             # --- Screenshot ---
             screenshot_dir = Path(__file__).resolve().parent / "screenshots"

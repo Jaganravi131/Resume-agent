@@ -235,6 +235,144 @@ def main() -> int:
     check("reset_session is safe on unknown key", test_reset_session_safe)
 
     # ========================================================================
+    # Outcome feedback loop (follow_up_agent + outcome-informed tailoring)
+    # ========================================================================
+    print("== outcome feedback loop ==")
+    from career_copilot import database, follow_up_agent
+    from career_copilot.tools import _outcome_informed_context
+    import tempfile as _tf
+
+    _tmpdb = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+    _tmpdb.close()
+    _orig_db = database.DB_PATH
+
+    import itertools as _it
+    _setup_counter = _it.count(1)
+
+    def _setup_outcome_db():
+        n = next(_setup_counter)  # unique URL per setup (jobs.url is UNIQUE)
+        url = f"https://outcome-test.example/ml-{n}"
+        database.DB_PATH = _tmpdb.name
+        database.init_db()
+        assert database.add_job("ML Engineer", "Acme", "Remote",
+                                url, "pytorch transformers"), "add_job must succeed"
+        jobs = database.get_all_jobs()
+        job_id = jobs[-1][0]
+        database.save_application(job_id, url, "submitted", "", resume_text="BASE")
+        database.save_resume_version(job_id, "ML Engineer", "Acme", "RESUME-BODY",
+                                     ats_score=91, generator="gemini")
+        return job_id
+
+    def _teardown_outcome_db():
+        database.DB_PATH = _orig_db
+        database.close_idle_resources()
+        import gc as _gc
+        _gc.collect()
+        for suf in ("", "-wal", "-shm"):
+            try:
+                os.unlink(_tmpdb.name + suf)
+            except OSError:
+                pass
+
+    def test_outcome_roundtrip_and_stats():
+        job_id = _setup_outcome_db()
+        assert follow_up_agent.record_application_outcome(job_id, "bogus_outcome").startswith("❌")
+        assert follow_up_agent.record_application_outcome(
+            job_id, "interview", notes="phone screen", resume_version=1
+        ).startswith("✅")
+        timeline = database.get_outcomes(job_id)
+        assert timeline[0]["outcome"] == "interview"
+        stats = database.get_outcome_stats()
+        assert stats.get("interview") == 1
+
+    def test_best_performing_resumes_ranking():
+        job_id = _setup_outcome_db()
+        database.record_outcome(job_id, "offer", resume_version=1)
+        best = database.get_best_performing_resumes(limit=5)
+        assert best and best[0]["best_outcome"] == "offer"
+        assert best[0]["ats_score"] == 91
+
+    def test_stale_detection():
+        job_id = _setup_outcome_db()
+        # status='submitted', no outcome events → stale immediately
+        stale = follow_up_agent.get_stale_applications(days=0)
+        assert any(s["job_id"] == job_id for s in stale)
+        digest = follow_up_agent.build_follow_up_digest(days=0)
+        assert digest["stale_count"] >= 1
+        nudge = digest["items"][0]["nudge"]
+        assert isinstance(nudge, str) and len(nudge) > 60  # template or LLM
+
+    def test_outcome_informed_context_additive():
+        """Empty history → empty context (prompt unchanged); with history → block.
+        Uses a FRESH DB — earlier tests in this suite already wrote outcomes to
+        the shared temp DB, so 'no history' can only be proven in isolation."""
+        fresh = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+        fresh.close()
+        database.DB_PATH = fresh.name
+        database.init_db()
+        try:
+            assert _outcome_informed_context("x", "y") == ""  # no outcomes yet
+            n = next(_setup_counter)
+            url = f"https://outcome-fresh.example/ml-{n}"
+            database.add_job("ML Engineer", "Beta", "Remote", url, "pytorch")
+            job_id = database.get_all_jobs()[-1][0]
+            database.save_resume_version(job_id, "ML Engineer", "Beta", "BODY")
+            database.record_outcome(job_id, "interview", resume_version=1)
+            ctx = _outcome_informed_context("ML Engineer", "pytorch")
+            assert "OUTCOME FEEDBACK" in ctx
+            assert "interview" in ctx
+        finally:
+            for suf in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(fresh.name + suf)
+                except OSError:
+                    pass
+            database.DB_PATH = _tmpdb.name  # restore shared DB for teardown
+
+    check("outcome recording validates + builds timeline + stats",
+          test_outcome_roundtrip_and_stats)
+    check("best-performing resumes ranked by outcome", test_best_performing_resumes_ranking)
+    check("stale applications detected + nudges generated", test_stale_detection)
+    check("outcome-informed tailoring context is purely additive",
+          test_outcome_informed_context_additive)
+    _teardown_outcome_db()
+
+    # ========================================================================
+    # Browser form memory (agent 9)
+    # ========================================================================
+    print("== browser form memory ==")
+    from career_copilot import browser_runner
+
+    def test_form_memory_roundtrip(tmp_path=None):
+        import json as _json
+        from pathlib import Path as _Path
+
+        orig = browser_runner._FORM_MEMORY_PATH
+        test_file = _Path(_tf.mkdtemp()) / "form_memory.json"
+        try:
+            browser_runner._FORM_MEMORY_PATH = test_file
+            assert browser_runner.load_form_memory("https://boards.greenhouse.io/x/1") == {}
+            browser_runner.save_form_memory(
+                "https://boards.greenhouse.io/x/1",
+                {"email": "input[name='email']", "full_name": "#name"},
+            )
+            mem = browser_runner.load_form_memory(
+                "https://boards.greenhouse.io/other/999"  # same domain, diff URL
+            )
+            assert mem.get("email") == "input[name='email']"
+            # different domain → no cross-contamination
+            assert browser_runner.load_form_memory("https://jobs.lever.co/x/1") == {}
+        finally:
+            browser_runner._FORM_MEMORY_PATH = orig
+            try:
+                test_file.unlink()
+            except OSError:
+                pass
+
+    check("form memory persists per-domain and never cross-contaminates",
+          test_form_memory_roundtrip)
+
+    # ========================================================================
     print("\n" + "=" * 60)
     print(f"Total: {len(PASS)}/{len(PASS) + len(FAIL)} passed")
     if FAIL:

@@ -59,6 +59,11 @@ def _lazy_register() -> None:
         search_job_postings,
     )
     from . import database, notifier
+    from .follow_up_agent import (
+        build_follow_up_digest,
+        get_stale_applications,
+        record_application_outcome,
+    )
     from .memory_retrieval import semantic_search
 
     _register("search_job_postings", search_job_postings)
@@ -73,6 +78,10 @@ def _lazy_register() -> None:
         "applications": database.get_application_count(),
     })
     _register("search_memory", lambda query, top_k=5: semantic_search(query, top_k=top_k))
+    _register("record_application_outcome", record_application_outcome)
+    _register("list_stale_applications", lambda days=14: get_stale_applications(days=days))
+    _register("build_follow_up_digest", lambda days=14: build_follow_up_digest(days=days))
+    _register("get_outcome_stats", database.get_outcome_stats)
 
 
 def notifier_notify() -> str:
@@ -91,6 +100,10 @@ TOOL_SPECS: dict[str, str] = {
     "send_daily_notifications": "{} — deliver the daily digest via Telegram/WhatsApp/Email",
     "get_database_stats": "{} — counts of stored jobs and applications",
     "search_memory": '{"query": "<what to recall>", "top_k": 5} — semantic search over every job, tailored resume version, and application the agent has ever seen (RAG memory)',
+    "record_application_outcome": '{"job_id": <int>, "outcome": "applied|auto_rejected|recruiter_screen|interview|onsite|offer|rejected|ghosted|withdrawn", "notes": "<optional>", "resume_version": <optional int>} — log an application outcome event',
+    "list_stale_applications": '{"days": 14} — submitted applications with no outcome in N days (follow-up candidates)',
+    "build_follow_up_digest": '{"days": 14} — stale applications each with a ready-to-send follow-up email draft',
+    "get_outcome_stats": "{} — aggregate outcome counts (interviews, rejections, ghosting...) across all applications",
 }
 
 

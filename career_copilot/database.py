@@ -100,6 +100,16 @@ def init_db():
                 UNIQUE(job_id, version)
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS application_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                outcome TEXT NOT NULL,
+                notes TEXT DEFAULT '',
+                resume_version INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
     # Migration for legacy databases created before the resume_text column
@@ -250,6 +260,133 @@ def update_application_status(job_id, status, apply_url=None):
             )
         conn.commit()
         return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Application outcomes (the agent learning loop)
+# ---------------------------------------------------------------------------
+
+ALLOWED_OUTCOMES = (
+    "applied", "auto_rejected", "recruiter_screen", "interview",
+    "onsite", "offer", "rejected", "ghosted", "withdrawn",
+)
+
+
+def record_outcome(job_id: int, outcome: str, notes: str = "",
+                   resume_version: int | None = None) -> bool:
+    """Append an outcome event for an application (interview, rejection, ...).
+
+    Immutable event log: multiple outcomes per application are allowed and
+    form a timeline (applied -> recruiter_screen -> interview -> offer).
+    """
+    if outcome not in ALLOWED_OUTCOMES:
+        logger.warning(
+            "Refusing invalid outcome %r for job_id=%s (allowed: %s)",
+            outcome, job_id, ALLOWED_OUTCOMES,
+        )
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO application_outcomes (job_id, outcome, notes, resume_version)
+            VALUES (?, ?, ?, ?)
+            """,
+            (job_id, outcome, notes, resume_version),
+        )
+        # Keep the applications.status column in sync with the latest outcome.
+        conn.execute(
+            "UPDATE applications SET status=? WHERE job_id=?", (outcome, job_id)
+        )
+        conn.commit()
+    return True
+
+
+def get_outcomes(job_id: int) -> list[dict]:
+    """Outcome timeline for one application, oldest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, outcome, notes, resume_version, created_at
+            FROM application_outcomes WHERE job_id=? ORDER BY created_at ASC, id ASC
+            """,
+            (job_id,),
+        ).fetchall()
+    return [
+        {"id": r[0], "outcome": r[1], "notes": r[2],
+         "resume_version": r[3], "created_at": str(r[4])}
+        for r in rows
+    ]
+
+
+def get_outcome_stats() -> dict:
+    """Aggregate outcome counts across ALL applications — the system's
+    report card, e.g. {'applied': 42, 'interview': 6, 'ghosted': 11,...}."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT outcome, COUNT(*) FROM application_outcomes GROUP BY outcome"
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def get_best_performing_resumes(limit: int = 5) -> list[dict]:
+    """Resume versions that led to interviews/offers — the tailoring signal.
+
+    Joins application_outcomes to resume_versions on (job_id, version) and
+    ranks by best outcome achieved. Only counts outcomes that indicate
+    traction (recruiter_screen and beyond).
+    """
+    positive = ("recruiter_screen", "interview", "onsite", "offer")
+    placeholders = ",".join("?" * len(positive))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT rv.job_id, rv.version, rv.title, rv.company, rv.ats_score,
+                   rv.generator, MAX(o.outcome) AS best_outcome, COUNT(*) AS n_positive
+            FROM application_outcomes o
+            JOIN resume_versions rv
+              ON rv.job_id = o.job_id AND rv.version = o.resume_version
+            WHERE o.outcome IN ({placeholders})
+            GROUP BY rv.job_id, rv.version
+            ORDER BY
+                CASE MAX(o.outcome)
+                    WHEN 'offer' THEN 5 WHEN 'onsite' THEN 4
+                    WHEN 'interview' THEN 3 WHEN 'recruiter_screen' THEN 2
+                    ELSE 1 END DESC,
+                n_positive DESC
+            LIMIT ?
+            """,
+            (*positive, max(1, int(limit))),
+        ).fetchall()
+    return [
+        {"job_id": r[0], "version": r[1], "title": r[2], "company": r[3],
+         "ats_score": r[4], "generator": r[5], "best_outcome": r[6]}
+        for r in rows
+    ]
+
+
+def get_stale_applications(days: int = 14) -> list[dict]:
+    """Submitted applications with no outcome recorded in *days* — follow-up
+    candidates. Considers the LATEST outcome event per application."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.job_id, j.title, j.company, a.apply_url, a.status,
+                   MAX(o.created_at) AS last_outcome_at
+            FROM applications a
+            JOIN jobs j ON j.id = a.job_id
+            LEFT JOIN application_outcomes o ON o.job_id = a.job_id
+            WHERE a.status = 'submitted'
+            GROUP BY a.job_id
+            HAVING last_outcome_at IS NULL
+                OR last_outcome_at < datetime('now', '-' || ? || ' days')
+            """,
+            (int(days),),
+        ).fetchall()
+    return [
+        {"job_id": r[0], "title": r[1], "company": r[2],
+         "apply_url": r[3], "status": r[4], "last_outcome_at": str(r[5])}
+        for r in rows
+    ]
 
 
 def save_resume_version(job_id, title, company, resume_text, pdf_path="",
