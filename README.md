@@ -56,14 +56,50 @@ An agentic multi-agent system built with [Google ADK](https://google.github.io/a
 | # | Agent | Description | Key Tools |
 |---|-------|-------------|-----------|
 | 1 | **Job_scout_agent** | Searches Remotive, Jobicy, RemoteOK, and DuckDuckGo for live job postings | `search_job_postings`, `store_scouted_job`, `compute_match_percentage` |
-| 2 | **Resume_optimizer_agent** | Generates tailored resumes using Gemini with ATS-friendly formatting | `generate_tailored_resume`, `export_resume_pdf`, `build_application_packet` |
+| 2 | **Resume_optimizer_agent** | Generates tailored resumes using Gemini with ATS-friendly formatting — now informed by which past resume versions led to interviews/offers | `generate_tailored_resume`, `export_resume_pdf`, `build_application_packet` |
 | 3 | **Resume_evaluator_agent** | Quality gate — evaluates, sanitizes, and auto-fixes resumes before they reach the user | `evaluate_resume_quality`, `sanitize_resume_text`, `evaluate_and_optimize`, `validate_pdf_output` |
-| 4 | **Application_agent** | Records application drafts and tracks submission status | `record_application` |
-| 5 | **Project_recommender_agent** | Suggests portfolio projects aligned with target companies | `recommend_projects` |
-| 6 | **Preparation_agent** | Builds interview preparation plans from job descriptions | `create_preparation_plan` |
+| 4 | **Application_agent** | Tracks applications AND their real-world outcomes (interview/rejection/ghosted), flags stale applications, drafts follow-up emails | `record_application`, `record_application_outcome`, `list_stale_applications`, `build_follow_up_digest` |
+| 5 | **Project_recommender_agent** | Evidence-based gap analysis: diffs the JD against your GitHub repos (or resume), then recommends projects ONLY for genuinely missing skills | `analyze_skill_gap`, `recommend_gap_closing_projects`, `recommend_projects` |
+| 6 | **Preparation_agent** | 7-day prep plans PLUS an adaptive mock-interview loop: asks questions, grades answers 0–10, adapts toward weak topics | `create_preparation_plan`, `start_mock_interview`, `answer_mock_interview`, `end_mock_interview` |
 | 7 | **Profile_optimizer_agent** | Optimizes LinkedIn, Portfolio, and GitHub profiles for target roles | `generate_profile_updates`, `analyze_target_company` |
 | 8 | **Daily_monitor_agent** | Sends daily job digest via Telegram, WhatsApp, and Email | `notify_user_of_matches` |
-| 9 | **Browser_application_agent** | Opens job pages in a real browser, fills form fields, pauses for human verification | `run_application_flow` |
+| 9 | **Browser_application_agent** | Fills application forms in a real browser (human clicks submit) with **form-memory**: learned selectors per ATS domain make repeat applications faster | `run_application_flow` |
+
+### The learning loop
+
+The agents share an outcome-feedback cycle that makes the system improve with use:
+
+```
+Outcome recorded (interview/rejected/ghosted)
+        │
+        ▼
+follow_up_agent: stale applications get polite nudge drafts
+        │
+        ▼
+get_best_performing_resumes(): versions that led to traction
+        │
+        ▼
+Resume_optimizer_agent: new tailoring mirrors what worked
+        │
+        ▼
+interview_agent: practice questions target weak topics
+```
+
+Other cross-cutting systems:
+
+- **RAG memory** (`memory_retrieval.py`) — semantic search over every job, resume version, and application ever seen (Gemini embeddings cached in SQLite, TF-IDF fallback offline).
+- **Plan→execute→reflect loop** (`agent_loop.py`) — goal-driven orchestration over an allow-listed tool registry with bounded replanning and a deterministic fallback.
+- **Tool-using chat** (`agent_chat.py`) — Streamlit chat routes through the real ADK root agent (per-tab sessions, wall-clock timeout).
+- **Observability** (`tracing.py`) — PII-safe spans for every LLM/tool/retrieval call: real OpenTelemetry when installed, structured logs always.
+
+### Docker
+
+```bash
+docker build -t career-copilot .
+docker run --rm -p 8501:8501 --env-file career_copilot/.env career-copilot
+# Batch mode instead:
+docker run career-copilot python -m career_copilot.scheduler --once
+```
 
 ---
 

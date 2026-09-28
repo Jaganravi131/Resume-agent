@@ -1,8 +1,18 @@
 # Career Copilot — System Design & Current-State Audit
 
-**Status:** post-hardening (3 debugging passes complete) · **Branch:** `arena/01a0c85d-resume-agent`
-**Verification:** `29/29` regression+unit tests · `12/12` offline evals · evaluator smoke PASS · CI green
+**Status:** post-hardening + agentic upgrade (`portfolio-upgrade` branch)
+**Verification:** `35/35` regression+unit tests · `31/31` portfolio-upgrade tests · `12/12` offline evals · evaluator smoke PASS
 **Companion docs:** `PROJECT_REPORT.md` (original 33-item bug audit + errata) · `PORTFOLIO_ROADMAP.md` (roadmap)
+
+> **Agentic upgrade note.** The original audit scored this system ~1.5–2/5 on the agentic
+> scorecard (§ Part 1 of `PORTFOLIO_ROADMAP.md`). The `portfolio-upgrade` branch closes the
+> biggest gaps: the Streamlit chat now routes through the real ADK root agent (criterion 2,
+> all surfaces); a plan→execute→reflect loop (`agent_loop.py`) provides LLM-controlled
+> orchestration with bounded replanning (criterion 1); an outcome-feedback loop
+> (`follow_up_agent.py` + outcome-informed tailoring) gives the system memory that changes
+> behavior (criterion 4); and adaptive tool selection now responds to failures via the
+> reflector (criterion 5). Remaining honest gap: single-generation refinement is still
+> bounded (critique→revise ≤3), not open-ended self-correction.
 
 ---
 
