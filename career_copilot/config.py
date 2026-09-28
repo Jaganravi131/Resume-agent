@@ -59,6 +59,50 @@ def get_model_chain() -> list[str]:
 
 _GENAI_CLIENT = None
 
+# --- Token/cost accounting (aggregate, in-process) --------------------------
+# Every successful/failed generate_content attempt records usage here so the
+# pipeline can report LLM spend per run. Costs are estimated from
+# COST_PER_1M_INPUT_TOKENS-style env vars (USD per 1M tokens, input/output);
+# defaults reflect typical gemini-2.5-flash pricing and are configurable.
+import threading as _threading
+
+_USAGE_LOCK = _threading.Lock()
+_USAGE = {"calls": 0, "failures": 0, "input_tokens": 0, "output_tokens": 0}
+
+
+def _record_usage(input_tokens: int, output_tokens: int, failed: bool = False) -> None:
+    with _USAGE_LOCK:
+        _USAGE["calls"] += 1
+        if failed:
+            _USAGE["failures"] += 1
+        _USAGE["input_tokens"] += max(0, int(input_tokens))
+        _USAGE["output_tokens"] += max(0, int(output_tokens))
+
+
+def get_llm_usage() -> dict:
+    """Aggregate LLM usage since process start, with a USD cost estimate.
+
+    Rates come from LLM_COST_INPUT_PER_1M / LLM_COST_OUTPUT_PER_1M env vars
+    (US dollars per 1M tokens; defaults 0.30 / 2.50 ≈ gemini-2.5-flash).
+    """
+    try:
+        in_rate = float(os.environ.get("LLM_COST_INPUT_PER_1M", "0.30"))
+        out_rate = float(os.environ.get("LLM_COST_OUTPUT_PER_1M", "2.50"))
+    except ValueError:
+        in_rate, out_rate = 0.30, 2.50
+    with _USAGE_LOCK:
+        snap = dict(_USAGE)
+    snap["estimated_cost_usd"] = round(
+        snap["input_tokens"] / 1e6 * in_rate + snap["output_tokens"] / 1e6 * out_rate, 6
+    )
+    return snap
+
+
+def reset_llm_usage() -> None:
+    """Zero the counters (e.g. at the start of a scheduled run)."""
+    with _USAGE_LOCK:
+        _USAGE.update({"calls": 0, "failures": 0, "input_tokens": 0, "output_tokens": 0})
+
 
 def _get_genai_client():
     """Return a cached google-genai client (raises if GOOGLE_API_KEY missing)."""
@@ -122,9 +166,19 @@ def call_gemini(
                     text = (response.text or "").strip()
                     if not text:
                         raise RuntimeError("empty response body")
+                    # Token accounting (best-effort — API may omit usage).
+                    try:
+                        usage = getattr(response, "usage_metadata", None)
+                        _record_usage(
+                            getattr(usage, "prompt_token_count", 0) or 0,
+                            getattr(usage, "candidates_token_count", 0) or 0,
+                        )
+                    except Exception:  # noqa: BLE001 — accounting must never break calls
+                        pass
                     _span["response_chars"] = len(text)
                     return text
                 except Exception as exc:
+                    _record_usage(0, 0, failed=True)
                     errors.append(f"{model}#attempt{attempt}: {exc}")
                     logger.warning(
                         "Gemini call failed on %s (attempt %d/%d): %s",
