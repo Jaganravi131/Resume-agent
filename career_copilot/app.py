@@ -409,13 +409,41 @@ with tab_tracker:
 # TAB 7: CONVERSATIONAL AI COPILOT
 # ==============================================================================
 with tab_chat:
-    st.subheader("💬 Interactive Career Copilot (Google ADK / Gemini Agent)")
-    st.markdown("Talk directly to your AI Career Copilot. Ask about job scouting, resume tips, interview prep, or application strategy.")
+    st.subheader("💬 Interactive Career Copilot (real ADK agent — tool-using)")
+
+    # Agent mode badge: is the true multi-agent runner live, or degraded fallback?
+    from career_copilot.agent_chat import agent_status, chat_reply, reset_session
+    status = agent_status()
+    if status["mode"] == "adk-agent":
+        st.success(
+            "🟢 **Agentic mode** — the chat talks to the real Google ADK root agent, "
+            "which can call tools (job search, digest, memory recall…) and delegate to the 9 sub-agents.",
+            icon="✅",
+        )
+    else:
+        st.warning(
+            "🟡 **Fallback LLM mode** — the ADK runner is unavailable, so replies come from plain Gemini "
+            "without tool use. Check that `google-adk` is installed.",
+            icon="⚠️",
+        )
+
+    st.markdown(
+        "Try: *“Search for Python Developer jobs”* · "
+        "*“What resumes have I sent to Stripe?”* (memory recall) · "
+        "*“Build me an interview prep plan for a FastAPI role”*"
+    )
+
+    c1, c2 = st.columns([4, 1])
+    with c2:
+        if st.button("🔄 New chat"):
+            reset_session("streamlit")
+            st.session_state.chat_messages = []
+            st.rerun()
 
     # Initialize chat history
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = [
-            {"role": "assistant", "content": "Hello! I am your Career Copilot. How can I help you accelerate your job search today? You can ask me to search for jobs, suggest interview prep questions, or review your resume."}
+            {"role": "assistant", "content": "Hello! I am your Career Copilot agent. I can actually *do* things — search live job boards, score matches, recall every resume version you've sent, and build prep plans. What should we work on?"}
         ]
 
     # Display chat messages
@@ -424,34 +452,17 @@ with tab_chat:
             st.markdown(msg["content"])
 
     # User input
-    user_prompt = st.chat_input("Ask Career Copilot (e.g. 'What are good interview questions for a junior FastAPI role?')...")
+    user_prompt = st.chat_input("Give the agent a goal (e.g. 'Find ML engineer jobs and send me a digest')...")
     if user_prompt:
-        # Append user message
         st.session_state.chat_messages.append({"role": "user", "content": user_prompt})
         with st.chat_message("user"):
             st.markdown(user_prompt)
 
-        # Generate response using Gemini
-        api_key = os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            reply = "⚠️ Google API Key is not configured. Please enter your Gemini API key in the sidebar to chat."
-        else:
-            try:
-                from career_copilot.config import call_gemini
-
-                base_resume = _extract_resume_text()
-                system_context = (
-                    f"You are the Career Copilot AI Agent. You help software engineers, ML engineers, and developers "
-                    f"find jobs, prepare for interviews, tailor resumes, and optimize portfolio projects.\n"
-                    f"Candidate's Background:\n{base_resume[:2000]}\n\n"
-                    f"Always provide concrete, actionable, highly practical technical career advice."
-                )
-
-                # Standby-model failover handled by call_gemini
-                reply = call_gemini(f"{system_context}\n\nUser Question: {user_prompt}", temperature=0.7)
-            except Exception as e:
-                reply = f"Error generating response: {e}"
+        # Route through the real ADK agent (tool calls + sub-agent delegation).
+        # The bridge degrades to plain Gemini only if ADK itself is unavailable.
+        with st.chat_message("assistant"):
+            with st.spinner("Agent thinking (may call tools and sub-agents)..."):
+                reply = chat_reply(user_prompt, session_key="streamlit")
+            st.markdown(reply)
 
         st.session_state.chat_messages.append({"role": "assistant", "content": reply})
-        with st.chat_message("assistant"):
-            st.markdown(reply)
