@@ -119,6 +119,52 @@ def main() -> int:
     check("tool execution returns structured errors (no raise)", test_execute_structured_error)
     check("no-API-key loop degrades to deterministic fallback", test_run_loop_no_key_falls_back)
 
+    def test_compact_result_digest_shape():
+        sr = agent_loop.StepResult(
+            step={"tool": "build_daily_digest", "description": "d"}, tool="build_daily_digest",
+            ok=True,
+            result={"jobs": [1, 2, 3], "digest": [
+                {"title": "ML Eng", "company": "A", "match_percentage": 88},
+                {"title": "Backend", "company": "B", "match_percentage": 71},
+            ]},
+        )
+        compact = sr.compact_result()
+        assert "fetched" in compact and "top_matches" in compact
+        assert "ML Eng" in compact and "88" in compact
+
+    def test_reflection_is_selective():
+        """Reflect only on failure / last step / every 3rd step — verified by
+        counting LLM calls via a stubbed _reflect."""
+        calls = {"n": 0}
+
+        def fake_reflect(goal, run, remaining):
+            calls["n"] += 1
+            return {"action": "continue"}
+
+        orig_reflect = agent_loop._reflect
+        orig_plan = agent_loop._plan
+        agent_loop._reflect = fake_reflect
+        agent_loop._plan = lambda goal, ms, qh: [
+            {"tool": "get_database_stats", "args": {}, "description": f"s{i}"}
+            for i in range(6)
+        ]
+        # Bypass the no-key fallback for this test (planner is stubbed anyway).
+        os.environ["GOOGLE_API_KEY"] = "test-stub"
+        try:
+            run = agent_loop.run_agent_loop("count to six", max_steps=6, max_iterations=10)
+            # 6 steps: reflect at 3 (periodic), 4 (fail? no — 4 is not last, not
+            # periodic → skipped), 6 (last+periodic) → exactly 2 reflections
+            # (steps 1,2,4,5 continue silently).
+            assert calls["n"] == 2, f"expected 2 selective reflections, got {calls['n']}"
+            assert len(run.steps_executed) == 6
+        finally:
+            agent_loop._reflect = orig_reflect
+            agent_loop._plan = orig_plan
+            os.environ.pop("GOOGLE_API_KEY", None)
+
+    check("digest results compact to structured reflector input", test_compact_result_digest_shape)
+    check("reflection is selective (cost-bounded), not per-step", test_reflection_is_selective)
+
     # ========================================================================
     # memory_retrieval (TF-IDF mode — no API key configured)
     # ========================================================================

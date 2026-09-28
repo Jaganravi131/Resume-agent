@@ -593,7 +593,16 @@ def test_legacy_db_migration() -> bool:
         assert tuple(row) == ("new note", "NEW-BODY"), f"legacy row must upsert cleanly, got {row}"
     finally:
         database.DB_PATH = original_path
-        os.unlink(tmp.name)
+        # Release WAL sidecar handles BEFORE unlinking — on Windows an open
+        # -wal/-shm handle causes WinError 32 (the original flake).
+        database.close_idle_resources()
+        import gc
+        gc.collect()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(tmp.name + suffix)
+            except OSError:
+                pass  # best-effort: temp dir is cleaned by the OS anyway
     print("  [PASS] legacy DB migrates cleanly (resume_text added, idempotent, rows preserved)")
     return True
 

@@ -16,12 +16,16 @@ import logging
 import os
 import threading
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Iterator
 
 logger = logging.getLogger("career_copilot.agent_chat")
 
 _APP_NAME = "career_copilot"
 _USER_ID = "streamlit_user"
+# Wall-clock cap for a single agent run. A goal that triggers the full
+# daily digest (live job APIs + LLM) must not hold the UI spinner forever.
+DEFAULT_RUN_TIMEOUT_S = float(os.environ.get("AGENT_CHAT_TIMEOUT_S", "240"))
 
 _lock = threading.Lock()
 _runner = None  # type: ignore[var-annotated]
@@ -61,12 +65,19 @@ def reset_session(session_key: str = "default") -> None:
         _sessions.pop(session_key, None)
 
 
-def chat_reply(user_message: str, session_key: str = "default") -> str:
+def chat_reply(
+    user_message: str,
+    session_key: str = "default",
+    *,
+    timeout_s: float | None = None,
+) -> str:
     """Send *user_message* through the ADK root agent and return the final text.
 
     The agent may call tools (search_job_postings, build_daily_digest, ...)
     and delegate to sub-agents; every intermediate event is logged so tool use
-    is observable in the Streamlit expander.
+    is observable in the Streamlit expander. The run is bounded by a wall-clock
+    timeout (default AGENT_CHAT_TIMEOUT_S, 240s) — on timeout the caller gets
+    a friendly message instead of a hanging spinner.
     """
     try:
         from google.genai import types
@@ -76,9 +87,19 @@ def chat_reply(user_message: str, session_key: str = "default") -> str:
         content = types.Content(role="user", parts=[types.Part(text=user_message)])
 
         final_text: str | None = None
-        for event in runner.run(
+        events = runner.run(
             user_id=_USER_ID, session_id=session_id, new_message=content
-        ):
+        )
+        # Bound the whole run: iterate with a deadline rather than trusting
+        # every downstream tool to honor its own per-call timeouts.
+        import time
+
+        deadline = time.monotonic() + (timeout_s or DEFAULT_RUN_TIMEOUT_S)
+        timed_out = False
+        for event in events:
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
             # Log function calls so tool use is observable in server logs.
             for call in event.get_function_calls():
                 logger.info("agent tool call: %s(%s)", call.name, call.args)
@@ -86,6 +107,14 @@ def chat_reply(user_message: str, session_key: str = "default") -> str:
                 texts = [p.text for p in event.content.parts if getattr(p, "text", None)]
                 if texts:
                     final_text = "\n".join(t for t in texts if t.strip())
+
+        if timed_out:
+            return (
+                "⏱️ The agent hit its time budget before finishing this goal "
+                f"({timeout_s or DEFAULT_RUN_TIMEOUT_S:.0f}s). Partial answer below — "
+                "try a narrower request (e.g. one tool at a time).\n\n"
+                + (final_text or "(no partial text produced)")
+            )
 
         if final_text is None:
             return (

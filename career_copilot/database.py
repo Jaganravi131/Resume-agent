@@ -23,6 +23,24 @@ def get_connection():
     return conn
 
 
+def close_idle_resources() -> None:
+    """Checkpoint and release WAL sidecar files for the current DB path.
+
+    On Windows, an open -wal/-shm handle blocks os.unlink() of the database
+    (tests and temp-DB users hit WinError 32). Running a TRUNCATE checkpoint
+    and opening/closing a fresh connection lets SQLite release the sidecars.
+    Safe to call at any time; failures are swallowed (best-effort).
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+
+
 def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -377,3 +395,23 @@ def cleanup_old_records(days: int = 90) -> dict:
 
 # Initialize DB on load
 init_db()
+
+# Vector-memory table (created here so it exists before first semantic_search;
+# import-local to avoid a circular dependency with memory_retrieval).
+try:
+    with get_connection() as _conn:
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                text_hash TEXT NOT NULL,
+                model TEXT NOT NULL,
+                vector_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(entity_type, entity_id, model)
+            )
+        """)
+        _conn.commit()
+except sqlite3.Error:
+    pass  # non-fatal: memory_retrieval lazily retries via _ensure_embeddings_table

@@ -65,6 +65,35 @@ class Retrieved:
 
 
 def _build_corpus() -> list[dict]:
+    """Collect the retrievable memory corpus (TTL-cached in-process).
+
+    Full-table scans per query are wasteful; a short TTL cache keeps repeated
+    searches fast while staying fresh enough for a single-user app.
+    """
+    global _CORPUS_CACHE, _CORPUS_CACHE_AT
+    import time
+
+    ttl = float(os.environ.get("MEMORY_CORPUS_TTL_S", "60"))
+    now = time.monotonic()
+    if _CORPUS_CACHE is not None and (now - _CORPUS_CACHE_AT) < ttl:
+        return _CORPUS_CACHE
+    corpus = _build_corpus_uncached()
+    _CORPUS_CACHE = corpus
+    _CORPUS_CACHE_AT = now
+    return corpus
+
+
+def invalidate_corpus_cache() -> None:
+    """Drop the in-process corpus cache (call after big DB writes)."""
+    global _CORPUS_CACHE
+    _CORPUS_CACHE = None
+
+
+_CORPUS_CACHE: list[dict] | None = None
+_CORPUS_CACHE_AT: float = 0.0
+
+
+def _build_corpus_uncached() -> list[dict]:
     """Collect the retrievable memory corpus. Never raises."""
     from . import database
 

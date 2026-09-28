@@ -434,9 +434,13 @@ with tab_chat:
     )
 
     c1, c2 = st.columns([4, 1])
+    # Unique per-browser-tab session key: two tabs must not share ADK memory.
+    if "chat_session_key" not in st.session_state:
+        st.session_state.chat_session_key = f"streamlit-{os.urandom(4).hex()}"
+    session_key = st.session_state.chat_session_key
     with c2:
         if st.button("🔄 New chat"):
-            reset_session("streamlit")
+            reset_session(session_key)
             st.session_state.chat_messages = []
             st.rerun()
 
@@ -462,7 +466,7 @@ with tab_chat:
         # The bridge degrades to plain Gemini only if ADK itself is unavailable.
         with st.chat_message("assistant"):
             with st.spinner("Agent thinking (may call tools and sub-agents)..."):
-                reply = chat_reply(user_prompt, session_key="streamlit")
+                reply = chat_reply(user_prompt, session_key=session_key)
             st.markdown(reply)
 
         st.session_state.chat_messages.append({"role": "assistant", "content": reply})
