@@ -662,6 +662,32 @@ def test_record_application_writes_versions() -> bool:
     return True
 
 
+def test_training_data_exporter() -> bool:
+    """training/export_training_data.py builds valid instruction-tuning pairs
+    from the immutable version history (data prep only — no model downloads)."""
+    import importlib.util
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "export_training_data", os.path.join(repo_root, "training", "export_training_data.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    database.init_db()
+    job_id = 950_000_000 + int.from_bytes(os.urandom(2), "big")
+    body = "X" * 250
+    database.save_resume_version(job_id, "Backend Engineer", "Acme", body)
+    pairs = mod.export_pairs(database)
+    mine = [p for p in pairs if "Backend Engineer at Acme" in p["input"]]
+    assert mine, "exporter must include the inserted version row"
+    pair = mine[0]
+    assert set(pair) == {"instruction", "input", "output"}
+    assert "JOB DESCRIPTION:" in pair["input"] and "BASE RESUME:" in pair["input"]
+    assert pair["output"] == body
+    json.dumps(pair)  # JSONL-serializable
+    print("  [PASS] training data exporter emits valid instruction-tuning pairs")
+    return True
+
+
 def test_board_api_ref_extraction() -> bool:
     """§8.9 build: Greenhouse/Lever job URLs must map to (platform, slug, job_id);
     Ashby and unrelated URLs must not (no API → None, scraped fallback)."""
@@ -781,6 +807,7 @@ REGRESSION_TESTS = [
     test_legacy_db_migration,
     test_resume_version_history,
     test_record_application_writes_versions,
+    test_training_data_exporter,
     test_board_api_ref_extraction,
     test_board_api_enrichment,
     test_ddg_enrichment_wired,

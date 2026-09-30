@@ -10,7 +10,7 @@
       "name": "discrimination",
       "passed": true,
       "score": 0.875,
-      "details": "good>bad win rate 3/3 families; Spearman(label, score) = 0.750; scores={'backend': {'good': 84, 'mediocre': 37, 'bad': 31}, 'data': {'good': 76, 'mediocre': 78, 'bad': 19}, 'platform': {'good': 64, 'mediocre': 37, 'bad': 22}}"
+      "details": "good>bad win rate 3/3 families; Spearman(label, score) = 0.750; scores={'backend': {'good': 80, 'mediocre': 36, 'bad': 29}, 'data': {'good': 72, 'mediocre': 74, 'bad': 19}, 'platform': {'good': 62, 'mediocre': 36, 'bad': 21}}"
     },
     {
       "name": "guardrail_recall",

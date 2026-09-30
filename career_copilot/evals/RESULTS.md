@@ -1,11 +1,11 @@
 # Career Copilot — Evals Results
 
-> Generated 2026-09-28 18:15 UTC · offline-first suite
+> Generated 2026-09-30 15:37 UTC · offline-first suite
 
 | Check | Result | Score | Details |
 |---|---|---|---|
 | `scorer_bounds` | PASS | 1.00 | all scores/categories within 0-100 (incl. duplicate-heavy JD) |
-| `discrimination` | PASS | 0.88 | good>bad win rate 3/3 families; Spearman(label, score) = 0.750; scores={'backend': {'good': 84, 'mediocre': 37, 'bad': 31}, 'data': {'good': 76, 'mediocre': 78, 'bad': 19}, 'platform': {'good': 64, 'mediocre': 37, 'bad': 22}} |
+| `discrimination` | PASS | 0.88 | good>bad win rate 3/3 families; Spearman(label, score) = 0.750; scores={'backend': {'good': 80, 'mediocre': 36, 'bad': 29}, 'data': {'good': 72, 'mediocre': 74, 'bad': 19}, 'platform': {'good': 62, 'mediocre': 36, 'bad': 21}} |
 | `guardrail_recall` | PASS | 1.00 | sample-level catch 3/3 (100%); skill-level recall 6/6 (100%) |
 | `guardrail_false_positives` | PASS | 1.00 | clean 3/3 truthful samples (0 false alarms) |
 | `sanitizer_invariants` | PASS | 1.00 | paths/fences/debug/metadata all stripped |

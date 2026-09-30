@@ -206,6 +206,19 @@ def get_application_count() -> int:
         return conn.cursor().execute("SELECT COUNT(*) FROM applications").fetchone()[0]
 
 
+def get_application(job_id):
+    """Return the application record for a job as a dict, or None."""
+    with get_connection() as conn:
+        row = conn.cursor().execute(
+            "SELECT job_id, apply_url, status, notes, created_at FROM applications WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"job_id": row[0], "apply_url": row[1], "status": row[2],
+            "notes": row[3], "created_at": row[4]}
+
+
 def save_application(job_id, apply_url, status, notes, resume_text=""):
     """Upsert an application record. `notes` holds free-form notes; the resume
     payload lives in its own `resume_text` column (legacy callers that stuffed

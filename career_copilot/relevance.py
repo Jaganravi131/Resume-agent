@@ -187,6 +187,39 @@ def _compute_tf(tokens: list[str]) -> dict[str, float]:
     return {term: count / total for term, count in counts.items()}
 
 
+def _bm25_resume_match(job_tokens: list[str], resume_tokens: list[str],
+                       corpus: list[list[str]], k1: float = 1.5, b: float = 0.75) -> float:
+    """Okapi BM25: how relevant this job posting is to the resume *query*.
+
+    Complements the TF-IDF cosine score with proper term-frequency saturation
+    and document-length normalization (long job posts no longer score higher
+    just by repeating skills). IDF comes from the same job-batch corpus the
+    TF-IDF path uses, so offline-only behavior is fully deterministic.
+    """
+    import math
+    if not job_tokens or not resume_tokens:
+        return 0.0
+    n_docs = max(1, len(corpus))
+    avgdl = sum(len(d) for d in corpus) / n_docs or 1.0
+    counts = Counter(job_tokens)
+    dl = len(job_tokens) or 1
+    score = 0.0
+    for term in set(resume_tokens):
+        tf = counts.get(term, 0)
+        if tf == 0:
+            continue
+        df = sum(1 for d in corpus if term in d)
+        idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+        score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
+    return score
+
+
+def _bm25_normalized(raw_bm25: float) -> float:
+    """Saturating map of raw BM25 onto 0-100 for composite blending."""
+    import math
+    return 100.0 * (1.0 - math.exp(-raw_bm25 / 12.0))
+
+
 def _compute_idf(term: str, all_documents: list[list[str]]) -> float:
     """Compute inverse document frequency for a term across documents."""
     if not all_documents:
@@ -438,8 +471,13 @@ def compute_relevance_score(
     if title_tokens:
         title_match_bonus = (title_matches / len(title_tokens)) * 15
 
+    # BM25 complement: term-frequency saturation + length normalization (fixes
+    # TF-IDF cosine's bias toward long, repetitive job posts)
+    bm25_norm = _bm25_normalized(_bm25_resume_match(job_tokens, resume_tokens, all_job_token_sets))
+
     composite = (
-        tfidf_raw * 0.55
+        tfidf_raw * 0.45
+        + bm25_norm * 0.15
         + category_avg * 0.25
         + experience_bonus
         + title_match_bonus

@@ -1,21 +1,37 @@
+"""Career Copilot — Streamlit dashboard.
+
+Professional single-page dashboard around the multi-agent backend:
+job scouting, ATS evaluation, resume tailoring (with audit trail),
+interview prep, application tracking (status machine + resume versions)
+and an interactive copilot chat.
+
+Every AI feature reports its execution mode honestly:
+  🟢 LIVE        — Gemini connected, real LLM generation
+  🟡 DETERMINISTIC — no API key: local fallbacks (template/grounded) are used
+"""
+
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
-import streamlit as st
+
 import pandas as pd
+import streamlit as st
 from pypdf import PdfReader
 
-# Ensure current package path is available
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from career_copilot.config import load_env, get_candidate_profile
+
 load_env()
 
 from career_copilot import database
 from career_copilot.tools import (
     search_job_postings,
     compute_match_percentage,
-    generate_tailored_resume,
+    compute_match_detailed,
+    generate_tailored_resume_with_audit,
     export_resume_pdf_from_markdown,
     generate_application_packet_for_job,
     create_preparation_plan,
@@ -26,447 +42,589 @@ from career_copilot.tools import (
 from career_copilot.resume_evaluator import (
     evaluate_resume_quality,
     sanitize_resume_text,
-    validate_pdf_output,
 )
 
-# --- Page Configuration & Custom CSS ---
+# ---------------------------------------------------------------------------
+# Page setup & theme
+# ---------------------------------------------------------------------------
+
 st.set_page_config(
-    page_title="Career Copilot AI | Multi-Agent System",
-    page_icon="🤖",
+    page_title="Career Copilot — Multi-Agent Job Search Suite",
+    page_icon="🧭",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown("""
+st.markdown(
+    """
 <style>
-    .main-header {
-        font-size: 2.3rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        color: #94a3b8;
-        font-size: 1.05rem;
-        margin-bottom: 1.5rem;
-    }
-    .metric-card {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 10px;
-        padding: 18px;
-        text-align: center;
-    }
-    .agent-badge {
-        background: #312e81;
-        color: #e0e7ff;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 0.82rem;
-        font-weight: 600;
-    }
-    .stButton>button {
-        background: linear-gradient(90deg, #6366f1 0%, #4f46e5 100%);
-        color: white;
-        font-weight: 600;
-        border: none;
-        border-radius: 8px;
-    }
+  :root {
+    --cc-border: #e2e8f0;
+    --cc-muted: #64748b;
+    --cc-accent: #4f46e5;
+  }
+  .cc-header {
+    display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap;
+    border-bottom: 1px solid var(--cc-border); padding-bottom: 0.6rem; margin-bottom: 1rem;
+  }
+  .cc-title { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.02em; margin: 0; }
+  .cc-sub   { color: var(--cc-muted); font-size: 0.98rem; margin: 0; }
+  .cc-pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em;
+  }
+  .cc-pill-green  { background: #dcfce7; color: #166534; }
+  .cc-pill-yellow { background: #fef9c3; color: #854d0e; }
+  .cc-pill-red    { background: #fee2e2; color: #991b1b; }
+  .cc-pill-slate  { background: #e2e8f0; color: #334155; }
+  .cc-pill-indigo { background: #e0e7ff; color: #3730a3; }
+  .cc-card {
+    border: 1px solid var(--cc-border); border-radius: 12px;
+    padding: 1rem 1.2rem; margin-bottom: 0.8rem; background: rgba(127,127,127,0.04);
+  }
+  .cc-section { font-size: 1.15rem; font-weight: 700; margin: 0.4rem 0 0.6rem 0; }
+  .cc-muted   { color: var(--cc-muted); font-size: 0.9rem; }
+  .cc-job-title { font-weight: 700; font-size: 1.02rem; }
+  .cc-kv b { font-weight: 600; }
+  div[data-testid="stMetricValue"] { font-size: 1.6rem; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# --- Sidebar Configuration ---
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _api_key() -> str:
+    return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+
+
+def _pill(text: str, kind: str = "slate") -> str:
+    return f'<span class="cc-pill cc-pill-{kind}">{text}</span>'
+
+
+def _mode_badge() -> str:
+    if _api_key():
+        return _pill("🟢 LIVE · Gemini connected", "green")
+    return _pill("🟡 DETERMINISTIC MODE · no API key (local fallbacks)", "yellow")
+
+
+def _health_icon(ok: bool) -> str:
+    return "🟢" if ok else "⚪"
+
+
+def _match_pill(score: int | float | None) -> str:
+    if score is None:
+        return _pill("n/a", "slate")
+    if score >= 70:
+        return _pill(f"{score}% match", "green")
+    if score >= 40:
+        return _pill(f"{score}% match", "yellow")
+    return _pill(f"{score}% match", "red")
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — configuration & system health
+# ---------------------------------------------------------------------------
+
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/bot.png", width=70)
-    st.title("Career Copilot AI")
-    st.caption("Autonomous Multi-Agent Career Suite")
-    
-    st.divider()
-    
-    # API Key Configuration (Checks GOOGLE_API_KEY and GEMINI_API_KEY)
-    st.subheader("⚙️ API Configuration")
-    configured_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
-    user_api_key = st.text_input(
-        "Google Gemini API Key",
-        value=configured_key,
-        type="password",
-        help="Provide a Google API Key to enable AI features live."
-    )
-    if user_api_key:
-        os.environ["GOOGLE_API_KEY"] = user_api_key
-        os.environ["GEMINI_API_KEY"] = user_api_key
-        st.success("API Key Active", icon="✅")
-    else:
-        st.warning("Enter Gemini API Key to run live AI generation.")
-        
-    st.divider()
-    
-    # System Status & Telemetry (via database helpers — no raw SQL in the UI layer)
-    st.subheader("📊 System Telemetry")
-    st.metric("Scouted Jobs", database.get_job_count())
-    st.metric("Applications Tracked", database.get_application_count())
-    st.metric("Active Agents", "9 / 9")
-    
-    st.divider()
-    st.markdown("Developed with **Google ADK** & **Gemini**")
+    st.markdown("## 🧭 Career Copilot")
+    st.caption("Multi-agent job search suite · Google ADK + Gemini")
 
-# --- Main App Header ---
-st.markdown('<div class="main-header">Career Copilot AI Agent Suite</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">An autonomous 9-Agent system for automated job scouting, ATS resume evaluation, resume tailoring, and interview prep.</div>', unsafe_allow_html=True)
+    database.init_db()
 
-# --- Navigation Tabs ---
-tab_arch, tab_scout, tab_eval, tab_tailor, tab_prep, tab_tracker, tab_chat = st.tabs([
-    "🏛️ System Architecture",
-    "🔍 Job Scout & Matcher",
-    "📊 ATS Resume Evaluator",
-    "📝 Resume Tailor & PDF",
-    "🎯 Interview & Profile Copilot",
-    "📋 Application Tracker",
-    "💬 Interactive AI Copilot",
-])
+    with st.expander("⚙️ API configuration", expanded=not bool(_api_key())):
+        key_input = st.text_input(
+            "Google Gemini API key",
+            value=_api_key(),
+            type="password",
+            help="Stored only in this session's environment. Enables real LLM features.",
+        )
+        if key_input:
+            os.environ["GOOGLE_API_KEY"] = key_input
+            os.environ["GEMINI_API_KEY"] = key_input
+        if _api_key():
+            st.success("Gemini connected — LIVE mode", icon="🟢")
+        else:
+            st.info("No key set — running in deterministic mode. All offline tools still work; "
+                    "LLM features use honest local fallbacks.", icon="🟡")
 
-# ==============================================================================
-# TAB 1: ARCHITECTURE & INTERVIEW SHOWCASE
-# ==============================================================================
-with tab_arch:
-    st.subheader("System Architecture & Multi-Agent Workflow")
-    st.markdown("""
-    Career Copilot is designed on a modular **Google ADK (Agent Development Kit)** multi-agent model. 
-    Each agent acts as a specialized micro-service with strictly scoped tools, database state transitions, and evaluation gates.
-    """)
-    
-    st.info("💡 **Architectural Highlight for Technical Interviews**: Features a quality-gate pattern where the `Resume_evaluator_agent` intercepts generated resumes to auto-fix formatting errors and prevent hallucinations before output validation.")
-    
-    st.markdown("### 🤖 Specialized Agent Matrix")
-    agent_data = [
-        {"ID": 1, "Agent": "Job_scout_agent", "Role": "Scouts jobs across Remotive, Jobicy, RemoteOK & DDG with seniority query expansion", "Primary Tools": "`search_job_postings`, `database.add_job`"},
-        {"ID": 2, "Agent": "Resume_optimizer_agent", "Role": "Tailors resumes with strict anti-hallucination guardrails and ATS formatting", "Primary Tools": "`generate_tailored_resume`, `export_resume_pdf_from_markdown`"},
-        {"ID": 3, "Agent": "Resume_evaluator_agent", "Role": "Quality Gate: Evaluates, sanitizes, & auto-fixes resumes", "Primary Tools": "`evaluate_resume_quality`, `sanitize_resume_text`"},
-        {"ID": 4, "Agent": "Application_agent", "Role": "Records application drafts and tracks submission status", "Primary Tools": "`record_application`"},
-        {"ID": 5, "Agent": "Project_recommender_agent", "Role": "Suggests portfolio projects aligned with target roles", "Primary Tools": "`recommend_projects`"},
-        {"ID": 6, "Agent": "Preparation_agent", "Role": "Builds 7-day interview preparation plans & Q&A guides", "Primary Tools": "`create_preparation_plan`"},
-        {"ID": 7, "Agent": "Profile_optimizer_agent", "Role": "Optimizes LinkedIn, GitHub, & Portfolio profiles", "Primary Tools": "`generate_profile_updates`"},
-        {"ID": 8, "Agent": "Daily_monitor_agent", "Role": "Sends automated alerts via Telegram, WhatsApp, & Email", "Primary Tools": "`notify_user_of_matches`"},
-        {"ID": 9, "Agent": "Browser_application_agent", "Role": "Automates real browser form-filling via Playwright with human verification", "Primary Tools": "`run_application_flow`"},
+    st.markdown("#### System health")
+    try:
+        _playwright_ok = True
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            _playwright_ok = False
+        health = [
+            ("Gemini API", bool(_api_key())),
+            ("Notifications", any(os.environ.get(k) for k in (
+                "TELEGRAM_BOT_TOKEN", "WHATSAPP_TOKEN", "SMTP_USERNAME"))),
+            ("Playwright (auto-apply)", _playwright_ok),
+            ("Database", True),
+        ]
+        for name, ok in health:
+            st.markdown(f"{_health_icon(ok)} {name}")
+    except Exception:
+        pass
+
+    st.divider()
+    st.markdown("#### Telemetry")
+    c1, c2 = st.columns(2)
+    c1.metric("Jobs scouted", database.get_job_count())
+    c2.metric("Applications", database.get_application_count())
+
+    st.caption("v1.2 · offline-verified backend (35 tests · 12 evals)")
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+st.markdown(
+    f"""
+<div class="cc-header">
+  <p class="cc-title">Career Copilot</p>
+  {_mode_badge()}
+</div>
+<p class="cc-sub">Automated job scouting · ATS scoring · truthful resume tailoring · human-in-the-loop auto-apply</p>
+""",
+    unsafe_allow_html=True,
+)
+
+tab_home, tab_scout, tab_eval, tab_tailor, tab_prep, tab_tracker, tab_chat = st.tabs(
+    ["📌 Overview", "🔍 Job Scout", "📊 ATS Evaluator", "✨ Resume Tailor",
+     "🎯 Interview Prep", "📋 Tracker", "💬 Copilot Chat"]
+)
+
+# =============================================================================
+# TAB: OVERVIEW
+# =============================================================================
+with tab_home:
+    jobs_count = database.get_job_count()
+    apps_count = database.get_application_count()
+    applied = len(database.get_jobs_by_status("applied"))
+    notified = len(database.get_jobs_by_status("notified"))
+
+    st.markdown('<p class="cc-section">Pipeline at a glance</p>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Jobs scouted", jobs_count)
+    m2.metric("Notified", notified)
+    m3.metric("Applied", applied)
+    m4.metric("Applications tracked", apps_count)
+
+    st.markdown('<p class="cc-section">Run the daily pipeline</p>', unsafe_allow_html=True)
+    st.caption("Search → two-phase scoring (TF-IDF, Gemini re-score in LIVE mode) → store → digest.")
+    pipe_col1, pipe_col2 = st.columns([2, 1])
+    with pipe_col1:
+        pipe_query = st.text_input("Pipeline query", value=os.environ.get("JOB_SEARCH_QUERY", "Python Developer"),
+                                   key="pipe_query")
+    with pipe_col2:
+        st.write("")
+        st.write("")
+        run_pipe = st.button("🚀 Run pipeline", type="primary", width="stretch")
+
+    if run_pipe:
+        with st.spinner("Running pipeline… (offline here, live on your machine)"):
+            digest = build_daily_digest(query=pipe_query, generate_full_packets=False)
+            st.success(
+                f"Fetched **{len(digest.get('jobs', []))}** jobs · "
+                f"passed filters **{len(digest.get('digest', []))}** · "
+                f"filtered out **{digest.get('filtered_out_count', 0)}** · "
+                f"LLM re-scored **{digest.get('llm_rescored', 0)}**",
+                icon="✅",
+            )
+            if digest.get("digest"):
+                rows = [{
+                    "Title": j["title"], "Company": j["company"],
+                    "Match": j.get("match_percentage", 0), "Source": j.get("source", ""),
+                    "URL": j.get("apply_url") or j.get("url", ""),
+                } for j in digest["digest"]]
+                st.dataframe(
+                    pd.DataFrame(rows),
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "Match": st.column_config.ProgressColumn("Match", min_value=0, max_value=100, format="%d%%"),
+                        "URL": st.column_config.LinkColumn("URL", display_text="Open"),
+                    },
+                )
+
+    st.markdown('<p class="cc-section">Agent roster</p>', unsafe_allow_html=True)
+    agent_rows = [
+        ("Job scout", "Searches Remotive · Jobicy · RemoteOK · board APIs (Greenhouse/Lever enrichment)"),
+        ("Resume optimizer", "Tailors resumes under strict truth rules; grounded fallback offline"),
+        ("Resume evaluator", "Quality gate: sanitize → 5-axis ATS score → anti-hallucination guardrail → critique loop"),
+        ("Application manager", "Records applications; immutable resume version history"),
+        ("Project recommender", "Company-aligned portfolio project ideas"),
+        ("Prep coach", "7-day interview plan + anticipated Q&A"),
+        ("Profile optimizer", "LinkedIn / GitHub / portfolio tuning + company intel (7-day cache)"),
+        ("Daily monitor", "Telegram · WhatsApp · Email digests (deliver-or-retry semantics)"),
+        ("Browser applicant", "Playwright form autofill — you always click Submit"),
     ]
-    st.table(pd.DataFrame(agent_data))
-    
-    st.subheader("⚡ Live Pipeline Execution Test (On-Demand Scouting Mode)")
-    if st.button("🚀 Run Live Pipeline (Search → Score → Digest)"):
-        with st.spinner("Running multi-agent execution pipeline..."):
-            digest = build_daily_digest(query="Python Developer", generate_full_packets=False)
-            scouted_count = len(digest.get("jobs", []))
-            st.success(f"Pipeline executed successfully! Scouted {scouted_count} jobs. Filtered: {digest.get('filtered_out_count', 0)}. Generated {len(digest.get('digest', []))} matched records in database.")
-            st.json(digest.get("digest", [])[:2] if digest.get("digest") else digest)
+    df_agents = pd.DataFrame(agent_rows, columns=["Agent", "Responsibility"])
+    st.dataframe(df_agents, width="stretch", hide_index=True)
 
-# ==============================================================================
-# TAB 2: JOB SCOUT & MATCHER
-# ==============================================================================
+# =============================================================================
+# TAB: JOB SCOUT
+# =============================================================================
 with tab_scout:
-    st.subheader("🔍 Automated Job Scouting & Seniority-Aware Matcher")
-    st.markdown("Search across multiple job boards. The query engine automatically incorporates your seniority preferences (`fresher`/`junior`) to ensure relevant roles.")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        search_query = st.text_input("Target Job Role / Keywords", value="Python Developer")
-    with col2:
-        num_results = st.slider("Max Results (total across sources)", min_value=1, max_value=10, value=3)
-        
-    user_skills_input = st.text_area("Your Core Skills (for reference)", value="Python, FastAPI, SQL, Docker, Machine Learning, Git, REST APIs")
-    
-    if st.button("🔎 Scout Live Jobs"):
-        with st.spinner(f"Scouting jobs for '{search_query}'..."):
-            jobs = search_job_postings(search_query, max_results=num_results)
-            
-            if jobs:
-                st.success(f"Found {len(jobs)} live job postings!")
-                
-                for idx, job in enumerate(jobs):
-                    job_title = job.get("title", "")
-                    job_desc = job.get("description", "")
-                    match_score = compute_match_percentage(job_title, job_desc)
-                    
-                    with st.expander(f"📌 {job_title} — {job.get('company', 'Unknown')} (Match Score: {match_score}%)", expanded=(idx == 0)):
-                        st.write(f"**Location:** {job.get('location', 'Remote')}")
-                        st.write(f"**Source:** {job.get('source', 'Web')}")
-                        st.markdown(f"**Apply Link:** [{job.get('url')}]({job.get('url')})")
-                        st.write("**Description Preview:**")
-                        st.caption(job_desc[:500] + "..." if job_desc else "No description provided.")
-                        
-                        if st.button(f"Save to Application Tracker #{idx}", key=f"save_{idx}"):
-                            saved = database.add_job(
-                                job_title,
-                                job.get('company', 'Unknown'),
-                                job.get('location', 'Remote'),
-                                job.get('url', ''),
-                                job_desc
-                            )
-                            if saved:
-                                st.success("Saved to database successfully!")
-                            else:
-                                st.info("This job is already saved in your database.")
-            else:
-                st.warning("No jobs found for the specified query.")
+    st.markdown('<p class="cc-section">Live job scouting</p>', unsafe_allow_html=True)
+    st.caption("Queries 4 providers, board results enriched via official Greenhouse/Lever APIs.")
 
-# ==============================================================================
-# TAB 3: ATS RESUME EVALUATOR
-# ==============================================================================
+    s1, s2, s3 = st.columns([3, 1, 1])
+    with s1:
+        search_query = st.text_input("Role / keywords", value="Python Developer", key="scout_query")
+    with s2:
+        num_results = st.number_input("Max results (total)", min_value=1, max_value=25, value=5, key="scout_max")
+    with s3:
+        st.write("")
+        st.write("")
+        scout_go = st.button("🔎 Scout", type="primary", width="stretch")
+
+    if scout_go:
+        with st.spinner(f"Scouting '{search_query}'…"):
+            jobs = search_job_postings(search_query, max_results=int(num_results))
+        if not jobs:
+            st.warning("No jobs found — try a broader query (e.g. 'Python' instead of 'Python Developer Fresher Chennai').")
+        else:
+            st.markdown(f"**{len(jobs)} roles found.** Scores use the base resume in `career_copilot/resume/`.")
+            for idx, job in enumerate(jobs):
+                title = job.get("title", "")
+                company = job.get("company", "Unknown")
+                desc = job.get("description", "")
+                score = compute_match_percentage(title, desc)
+                url = job.get("url", "")
+                with st.container(border=True):
+                    top1, top2 = st.columns([5, 1])
+                    with top1:
+                        st.markdown(
+                            f'<span class="cc-job-title">{title}</span> · {company} '
+                            f'{_pill(job.get("location", "Remote"), "slate")} '
+                            f'{_pill(job.get("source", "web"), "indigo")}',
+                            unsafe_allow_html=True,
+                        )
+                    with top2:
+                        st.markdown(_match_pill(score), unsafe_allow_html=True)
+                    if desc:
+                        st.caption(desc[:420] + ("…" if len(desc) > 420 else ""))
+                    a1, a2 = st.columns([1, 5])
+                    with a1:
+                        st.link_button("Apply ↗", url or "#", width="stretch")
+                    with a2:
+                        if st.button("💾 Save to tracker", key=f"save_{idx}", width="content"):
+                            saved = database.add_job(title, company, job.get("location", "Remote"), url, desc)
+                            if saved:
+                                st.toast(f"Saved: {title} at {company}", icon="💾")
+                            else:
+                                st.toast("Already in your tracker.", icon="ℹ️")
+
+# =============================================================================
+# TAB: ATS EVALUATOR
+# =============================================================================
 with tab_eval:
-    st.subheader("📊 ATS Resume Evaluator & Anti-Hallucination Quality Gate")
-    st.markdown("Upload your existing resume (PDF) or paste the text to get a comprehensive ATS score, missing sections, and formatting analysis.")
-    
-    uploaded_file = st.file_uploader("Upload Resume (PDF)", type=["pdf"])
+    st.markdown('<p class="cc-section">ATS quality gate</p>', unsafe_allow_html=True)
+    st.caption("Same 5-axis rubric the pipeline applies before any resume is sent.")
+
+    up_col, hint_col = st.columns([2, 3])
+    with up_col:
+        uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"])
     resume_text_input = ""
-    
     if uploaded_file is not None:
         reader = PdfReader(uploaded_file)
-        resume_text_input = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        st.success(f"Extracted {len(resume_text_input)} characters from PDF.")
-        
-    resume_text = st.text_area("Resume Content (Editable)", value=resume_text_input, height=180, placeholder="Paste your resume text here...")
-    
-    if st.button("🔬 Run ATS Quality Gate Evaluation"):
+        resume_text_input = "\n".join(
+            page.extract_text() or "" for page in reader.pages
+        ).strip()
+        if resume_text_input:
+            st.success(f"Extracted {len(resume_text_input):,} characters.", icon="📄")
+        else:
+            st.error("Could not extract text from this PDF.")
+
+    resume_text = st.text_area("Resume text", value=resume_text_input, height=220,
+                               placeholder="Paste your resume here…")
+
+    if st.button("🔬 Evaluate", type="primary"):
         if not resume_text.strip():
-            st.error("Please upload or paste a resume first.")
+            st.error("Upload a PDF or paste resume text first.")
         else:
-            with st.spinner("Evaluating ATS compatibility & sanitizing text..."):
-                candidate_name = os.environ.get("RESUME_NAME", "")
-                eval_result = evaluate_resume_quality(resume_text, candidate_name)
-                sanitized_text = sanitize_resume_text(resume_text)
-                
-                score = eval_result.get("score", 0)
-                
-                st.subheader(f"ATS Score: {score} / 100")
+            profile = get_candidate_profile()
+            result = evaluate_resume_quality(resume_text, profile.get("name", "") or None)
+            score = int(result.get("score", 0))
+
+            sc_col, meta_col = st.columns([1, 2])
+            with sc_col:
+                st.metric("ATS score", f"{score} / 100")
                 st.progress(score / 100)
-                
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("### ⚠️ Quality Gate Issues Detected")
-                    issues = eval_result.get("issues", [])
-                    if issues:
-                        for issue in issues:
-                            st.write(f"- ❌ {issue}")
-                    else:
-                        st.success("✅ Clean structure! No major formatting, metadata, or contact info gaps found.")
-                with c2:
-                    st.markdown("### 📊 Score Breakdown")
-                    breakdown = eval_result.get("breakdown", {})
-                    for cat, pts in breakdown.items():
-                        st.write(f"- **{cat.replace('_', ' ').title()}:** {pts} pts")
-                        
-                with st.expander("✨ View Sanitized Resume Text"):
-                    st.text(sanitized_text)
-
-# ==============================================================================
-# TAB 4: RESUME TAILOR & PDF EXPORTER
-# ==============================================================================
-with tab_tailor:
-    st.subheader("📝 AI Resume Tailor & ATS PDF Generator (With Truth Guardrails)")
-    st.markdown("Automatically rewrite your resume tailored specifically to the target company & job description with strict anti-hallucination rules, then download a clean ATS PDF.")
-    
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        t_title = st.text_input("Target Job Title", value="Junior Python Engineer")
-    with col_t2:
-        t_company = st.text_input("Target Company Name", value="Tech Corp Inc.")
-    t_jd = st.text_area("Target Job Description", height=150, placeholder="Paste job description...")
-    
-    if st.button("✨ Generate Tailored Resume & ATS PDF"):
-        if not t_jd.strip():
-            st.error("Please provide a job description.")
-        else:
-            with st.spinner("Tailoring resume with Gemini AI (Anti-Hallucination active)..."):
-                tailored_markdown = generate_tailored_resume(t_title, t_company, t_jd)
-                
-                st.markdown("### 📄 Tailored Resume Preview")
-                st.markdown(tailored_markdown)
-                
-                with st.spinner("Generating ATS-Friendly PDF..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                        pdf_path = tmp_file.name
-                        
-                    export_resume_pdf_from_markdown(t_title, t_company, tailored_markdown, pdf_path)
-                    
-                    with open(pdf_path, "rb") as f:
-                        pdf_bytes = f.read()
-                        
-                    st.download_button(
-                        label="📥 Download Tailored ATS PDF",
-                        data=pdf_bytes,
-                        file_name=f"{t_company.replace(' ', '_')}_{t_title.replace(' ', '_')}_Resume.pdf",
-                        mime="application/pdf"
+                if result.get("passed"):
+                    st.markdown(_pill("PASS ≥ 70", "green"), unsafe_allow_html=True)
+                else:
+                    st.markdown(_pill("BELOW GATE (< 70)", "red"), unsafe_allow_html=True)
+            with meta_col:
+                breakdown = result.get("breakdown", {})
+                if breakdown:
+                    st.markdown("**Score breakdown**")
+                    bd = pd.DataFrame(
+                        [(k.replace("_", " ").title(), v) for k, v in breakdown.items()],
+                        columns=["Axis", "Points"],
                     )
+                    st.dataframe(bd, width="stretch", hide_index=True)
 
-# ==============================================================================
-# TAB 5: INTERVIEW & PROFILE COPILOT
-# ==============================================================================
-with tab_prep:
-    st.subheader("🎯 Interview Prep & Profile Optimizer")
-    
-    prep_mode = st.radio("Select Tool Mode", ["7-Day Interview Prep Guide", "Profile Optimizer (LinkedIn/GitHub)"])
-    
-    if prep_mode == "7-Day Interview Prep Guide":
-        st.markdown("Generate a structured 7-day interview study plan and anticipated technical Q&A based on the job description.")
-        p_title = st.text_input("Target Job Title", value="Junior Backend Engineer")
-        p_company = st.text_input("Company Name", value="Innovative AI Studio")
-        p_jd = st.text_area("Job Description", height=150)
-        
-        if st.button("🚀 Build Interview Prep Plan"):
-            if not p_jd.strip():
-                st.error("Please provide job description.")
+            issues = result.get("issues", [])
+            if issues:
+                with st.container(border=True):
+                    st.markdown("**⚠️ Issues detected**")
+                    for issue in issues:
+                        st.markdown(f"- {issue}")
             else:
-                with st.spinner("Generating preparation plan..."):
-                    plan_text = create_preparation_plan(p_title, p_jd)
-                    st.markdown("### 📋 Customized Preparation Guide")
-                    st.markdown(plan_text)
-                    
-    else:
-        st.markdown("Optimize your LinkedIn, GitHub, and portfolio summaries for target roles.")
-        prof_title = st.text_input("Target Job Title", value="AI / ML Engineer")
-        prof_company = st.text_input("Target Company Name", value="Google")
-        prof_jd = st.text_area("Target Job Description (or core skills)", height=120, value="Python, Machine Learning, Docker, Agentic AI, SQL")
-        
-        if st.button("✨ Optimize Profile"):
-            with st.spinner("Optimizing profile recommendations..."):
-                report = generate_profile_updates(prof_title, prof_company, prof_jd)
-                st.markdown("### 🌟 Optimized Profile Recommendations")
-                st.markdown(report)
+                st.success("Clean resume — no structural, contact, or metadata issues.", icon="✅")
 
-# ==============================================================================
-# TAB 6: APPLICATION TRACKER & ON-DEMAND TAILORING
-# ==============================================================================
-with tab_tracker:
-    st.subheader("📋 Application Tracker & On-Demand Tailoring")
-    st.markdown("Manage saved jobs in `copilot.db` and generate tailored resumes and interview packets **on demand** only for the jobs you select.")
-    
-    all_jobs = database.get_all_jobs()
-    if all_jobs:
-        jobs_df = pd.DataFrame(
-            all_jobs,
-            columns=["ID", "Title", "Company", "Location", "URL", "Description", "Status", "Created At"]
-        )
-        st.dataframe(
-            jobs_df[["ID", "Title", "Company", "Location", "Status", "Created At", "URL"]],
-            width="stretch"
-        )
-        
-        col_act1, col_act2 = st.columns([1, 1])
-        with col_act1:
-            selected_job_id = st.selectbox("Select Job ID to Manage", jobs_df["ID"])
-        with col_act2:
-            # Job lifecycle only — 'drafted' lives on the applications table, not jobs
-            new_status = st.selectbox("Update Status", list(database.ALLOWED_JOB_STATUSES))
-            if st.button("Save Status Update"):
-                database.update_job_status(selected_job_id, new_status)
-                st.success(f"Job #{selected_job_id} status updated to '{new_status}'!")
-                st.rerun()
+            with st.expander("View sanitized text (what the ATS sees)"):
+                st.text(sanitize_resume_text(resume_text))
 
-        # Selected Job Details & On-Demand Actions
-        selected_row = jobs_df[jobs_df["ID"] == selected_job_id].iloc[0]
-        st.divider()
-        st.markdown(f"### 🎯 Action Center for: **{selected_row['Title']}** at **{selected_row['Company']}**")
-        st.write(f"**URL:** [{selected_row['URL']}]({selected_row['URL']})")
-        st.caption(selected_row['Description'][:300] + "..." if selected_row['Description'] else "No description.")
-
-        if st.button(f"⚡ Generate Tailored Resume & PDF for Job #{selected_job_id}"):
-            with st.spinner(f"Generating on-demand application packet for {selected_row['Company']}..."):
-                packet = generate_application_packet_for_job(
-                    selected_row['Title'],
-                    selected_row['Company'],
-                    selected_row['Description'] or selected_row['Title'],
-                    selected_row['URL']
-                )
-                st.success("Packet generated successfully!")
-                
-                c_res1, c_res2 = st.columns(2)
-                with c_res1:
-                    st.markdown("#### 📄 Tailored Resume Text")
-                    st.text_area("Resume Content", packet["resume_text"], height=300)
-                with c_res2:
-                    st.markdown("#### 🎯 7-Day Interview Prep")
-                    st.markdown(packet["prep"])
-                    if packet["projects"]:
-                        st.markdown("#### 🚀 Recommended Portfolio Projects")
-                        st.markdown(packet["projects"])
-
-                # Provide Download button if PDF generated
-                pdf_path = packet.get("resume_pdf")
-                if pdf_path and os.path.exists(pdf_path):
-                    with open(pdf_path, "rb") as pf:
-                        pdf_bytes = pf.read()
-                    st.download_button(
-                        label=f"📥 Download Tailored PDF ({packet['resume_pdf_name']})",
-                        data=pdf_bytes,
-                        file_name=packet["resume_pdf_name"],
-                        mime="application/pdf"
-                    )
-    else:
-        st.info("No jobs recorded in the database yet. Scout jobs in Tab 2 or run the daily cycle to populate!")
-
-# ==============================================================================
-# TAB 7: CONVERSATIONAL AI COPILOT
-# ==============================================================================
-with tab_chat:
-    st.subheader("💬 Interactive Career Copilot (real ADK agent — tool-using)")
-
-    # Agent mode badge: is the true multi-agent runner live, or degraded fallback?
-    from career_copilot.agent_chat import agent_status, chat_reply, reset_session
-    status = agent_status()
-    if status["mode"] == "adk-agent":
-        st.success(
-            "🟢 **Agentic mode** — the chat talks to the real Google ADK root agent, "
-            "which can call tools (job search, digest, memory recall…) and delegate to the 9 sub-agents.",
-            icon="✅",
-        )
-    else:
-        st.warning(
-            "🟡 **Fallback LLM mode** — the ADK runner is unavailable, so replies come from plain Gemini "
-            "without tool use. Check that `google-adk` is installed.",
-            icon="⚠️",
-        )
-
+# =============================================================================
+# TAB: RESUME TAILOR
+# =============================================================================
+with tab_tailor:
+    st.markdown('<p class="cc-section">Truthful resume tailor</p>', unsafe_allow_html=True)
     st.markdown(
-        "Try: *“Search for Python Developer jobs”* · "
-        "*“What resumes have I sent to Stripe?”* (memory recall) · "
-        "*“Build me an interview prep plan for a FastAPI role”*"
+        f"Rewrites your base resume for a specific role — anti-hallucination guardrail active. {_mode_badge()}",
+        unsafe_allow_html=True,
     )
 
-    c1, c2 = st.columns([4, 1])
-    # Unique per-browser-tab session key: two tabs must not share ADK memory.
-    if "chat_session_key" not in st.session_state:
-        st.session_state.chat_session_key = f"streamlit-{os.urandom(4).hex()}"
-    session_key = st.session_state.chat_session_key
-    with c2:
-        if st.button("🔄 New chat"):
-            reset_session(session_key)
+    base_ok = bool(_extract_resume_text())
+    if not base_ok:
+        st.warning("No base resume found at `career_copilot/resume/*.pdf` — tailoring will rely on profile fields only.", icon="⚠️")
+
+    t1, t2 = st.columns(2)
+    with t1:
+        t_title = st.text_input("Job title", value="Junior Python Engineer", key="t_title")
+    with t2:
+        t_company = st.text_input("Company", value="Tech Corp", key="t_company")
+    t_jd = st.text_area("Job description", height=170, placeholder="Paste the job description…", key="t_jd")
+
+    if st.button("✨ Tailor resume", type="primary"):
+        if not t_jd.strip():
+            st.error("Paste a job description first.")
+        else:
+            with st.spinner("Generating → critiquing → revising…"):
+                audited = generate_tailored_resume_with_audit(t_title, t_company, t_jd)
+                tailored = audited["resume_text"]
+                evaluation = audited.get("evaluation", {})
+
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("ATS score", evaluation.get("score", 0))
+            r2.metric("Gate", "PASS" if evaluation.get("passed") else "BELOW")
+            r3.metric("Revise attempts", audited.get("optimization_attempts", 0))
+            r4.metric("Generator", audited.get("generator", "?").replace("_", " "))
+
+            hallucinated = audited.get("hallucinated_skills", [])
+            if hallucinated:
+                st.warning(f"Guardrail removed unverified skills: {', '.join(hallucinated)}", icon="🛡️")
+            else:
+                st.success("Guardrail: no unverified skills — every claim is evidence-backed.", icon="🛡️")
+
+            with st.container(border=True):
+                st.markdown("**Tailored resume**")
+                st.text(tailored)
+
+            with st.spinner("Rendering PDF…"):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    pdf_path = tmp.name
+                export_resume_pdf_from_markdown(t_title, t_company, tailored, pdf_path)
+                with open(pdf_path, "rb") as fh:
+                    pdf_bytes = fh.read()
+            st.download_button(
+                "📥 Download ATS PDF",
+                data=pdf_bytes,
+                file_name=f"{t_company.replace(' ', '_')}_{t_title.replace(' ', '_')}_Resume.pdf",
+                mime="application/pdf",
+                type="primary",
+            )
+
+# =============================================================================
+# TAB: INTERVIEW PREP
+# =============================================================================
+with tab_prep:
+    st.markdown('<p class="cc-section">Interview prep & profile optimization</p>', unsafe_allow_html=True)
+
+    mode = st.segmented_control("Tool", ["7-day prep plan", "Profile optimizer"], default="7-day prep plan") \
+        if hasattr(st, "segmented_control") else st.radio("Tool", ["7-day prep plan", "Profile optimizer"], horizontal=True)
+
+    p1, p2 = st.columns(2)
+    with p1:
+        p_title = st.text_input("Job title", value="Backend Engineer", key="p_title")
+    with p2:
+        p_company = st.text_input("Company", value="Innovative AI Studio", key="p_company")
+    p_jd = st.text_area("Job description / core skills", height=160, key="p_jd",
+                        placeholder="Paste the job description…")
+
+    if mode == "7-day prep plan":
+        if st.button("🗓️ Build 7-day plan", type="primary"):
+            if not p_jd.strip():
+                st.error("Paste a job description first.")
+            else:
+                with st.spinner("Building day-by-day plan + practice Q&A…"):
+                    plan = create_preparation_plan(p_title, p_jd)
+                with st.container(border=True):
+                    st.markdown(plan)
+    else:
+        if st.button("🌟 Optimize profiles", type="primary"):
+            with st.spinner("Analyzing target role & your public profiles…"):
+                report = generate_profile_updates(p_title, p_company, p_jd)
+            with st.container(border=True):
+                st.markdown(report)
+
+# =============================================================================
+# TAB: TRACKER
+# =============================================================================
+with tab_tracker:
+    st.markdown('<p class="cc-section">Application tracker</p>', unsafe_allow_html=True)
+    st.caption("Job lifecycle (found → notified → applied → interviewing → archived) and application lifecycle "
+               "(drafted → ready_to_submit → submitted → interviewing → offer | rejected) are tracked separately and honestly.")
+
+    all_jobs = database.get_all_jobs()
+    if not all_jobs:
+        st.info("No jobs yet — scout roles in the Job Scout tab or run the pipeline from Overview.", icon="📭")
+    else:
+        jobs_df = pd.DataFrame(
+            all_jobs,
+            columns=["ID", "Title", "Company", "Location", "URL", "Description", "Status", "Created"],
+        )
+        st.dataframe(
+            jobs_df[["ID", "Title", "Company", "Location", "Status", "Created", "URL"]],
+            width="stretch", hide_index=True,
+            column_config={"URL": st.column_config.LinkColumn("URL", display_text="Open")},
+        )
+
+        st.markdown("#### Manage a job")
+        sel_col, _ = st.columns([1, 2])
+        with sel_col:
+            selected_job_id = st.selectbox("Job ID", list(jobs_df["ID"]))
+        row = jobs_df[jobs_df["ID"] == selected_job_id].iloc[0]
+
+        st.markdown(
+            f'<div class="cc-card cc-kv"><span class="cc-job-title">{row["Title"]}</span> · {row["Company"]}<br/>'
+            f'<span class="cc-muted">{row["Location"]} · saved {row["Created"]}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        a_col, b_col = st.columns(2)
+        with a_col:
+            st.markdown("**Job lifecycle**")
+            current_status = row["Status"]
+            new_status = st.selectbox(
+                "Set job status", list(database.ALLOWED_JOB_STATUSES),
+                index=list(database.ALLOWED_JOB_STATUSES).index(current_status)
+                if current_status in database.ALLOWED_JOB_STATUSES else 0,
+                key="job_status_sel",
+            )
+            if st.button("Update job status", key="upd_job"):
+                if database.update_job_status(selected_job_id, new_status):
+                    st.success(f"Job #{selected_job_id} → '{new_status}'")
+                    st.rerun()
+
+        with b_col:
+            st.markdown("**Application lifecycle**")
+            app_row = database.get_application(selected_job_id)
+            if app_row:
+                st.markdown(
+                    f"Current: {_pill(app_row['status'], 'indigo')} · since {app_row['created_at']}",
+                    unsafe_allow_html=True,
+                )
+                new_app_status = st.selectbox(
+                    "Set application status", list(database.ALLOWED_APPLICATION_STATUSES),
+                    index=list(database.ALLOWED_APPLICATION_STATUSES).index(app_row["status"])
+                    if app_row["status"] in database.ALLOWED_APPLICATION_STATUSES else 0,
+                    key="app_status_sel",
+                )
+                if st.button("Update application status", key="upd_app"):
+                    if database.update_application_status(selected_job_id, new_app_status):
+                        st.success(f"Application → '{new_app_status}'")
+                        st.rerun()
+            else:
+                st.caption("No application recorded for this job yet — generate a packet below or apply via CLI.")
+
+        st.divider()
+        packet_col, versions_col = st.columns(2)
+        with packet_col:
+            st.markdown("**On-demand application packet**")
+            if st.button("⚙️ Generate packet (resume + prep + profile)", key="gen_packet"):
+                with st.spinner("Assembling packet…"):
+                    packet = generate_application_packet_for_job(
+                        row["Title"], row["Company"], row["Description"], row["URL"]
+                    )
+                audit = packet.get("audit", {})
+                score = (audit.get("evaluation") or {}).get("score")
+                st.markdown(
+                    f"Match: {_match_pill(score)} "
+                    f"{_pill('generator: ' + audit.get('generator', '?').replace('_', ' '), 'slate')}",
+                    unsafe_allow_html=True,
+                )
+                hallucinated = audit.get("hallucinated_skills", [])
+                if hallucinated:
+                    st.warning(f"Guardrail removed unverified skills: {', '.join(hallucinated)}", icon="🛡️")
+                with st.expander("Tailored resume", expanded=True):
+                    st.text(packet.get("resume_text", ""))
+                with st.expander("Interview prep"):
+                    st.markdown(packet.get("prep", ""))
+                with st.expander("Profile updates"):
+                    st.markdown(packet.get("profile", ""))
+                with st.expander("Recommended projects"):
+                    st.markdown(packet.get("projects", ""))
+
+        with versions_col:
+            st.markdown("**Resume version history**")
+            versions = database.get_resume_versions(selected_job_id)
+            if not versions:
+                st.caption("No versions recorded yet — versions are saved automatically when you record an application.")
+            else:
+                for v in versions:
+                    score = f"ATS {v['ats_score']}" if v["ats_score"] is not None else "ATS n/a"
+                    st.markdown(
+                        f"{_pill('v' + str(v['version']), 'slate')} {score} · {v['generator']} · "
+                        f"{v['text_length']:,} chars · {v['created_at']}",
+                        unsafe_allow_html=True,
+                    )
+
+# =============================================================================
+# TAB: COPILOT CHAT
+# =============================================================================
+with tab_chat:
+    st.markdown('<p class="cc-section">Copilot chat</p>', unsafe_allow_html=True)
+
+    if not _api_key():
+        st.info(
+            "Chat needs a Gemini API key (sidebar → API configuration). "
+            "Unlike a mock reply bot, this assistant only speaks when a real model is connected — "
+            "everything else in this dashboard works offline.",
+            icon="🔑",
+        )
+    else:
+        if "chat_messages" not in st.session_state:
             st.session_state.chat_messages = []
-            st.rerun()
 
-    # Initialize chat history
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = [
-            {"role": "assistant", "content": "Hello! I am your Career Copilot agent. I can actually *do* things — search live job boards, score matches, recall every resume version you've sent, and build prep plans. What should we work on?"}
-        ]
+        for msg in st.session_state.chat_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-    # Display chat messages
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        if prompt := st.chat_input("Ask about jobs, resumes, interview prep…"):
+            st.session_state.chat_messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking…"):
+                    from career_copilot.config import call_gemini
 
-    # User input
-    user_prompt = st.chat_input("Give the agent a goal (e.g. 'Find ML engineer jobs and send me a digest')...")
-    if user_prompt:
-        st.session_state.chat_messages.append({"role": "user", "content": user_prompt})
-        with st.chat_message("user"):
-            st.markdown(user_prompt)
-
-        # Route through the real ADK agent (tool calls + sub-agent delegation).
-        # The bridge degrades to plain Gemini only if ADK itself is unavailable.
-        with st.chat_message("assistant"):
-            with st.spinner("Agent thinking (may call tools and sub-agents)..."):
-                reply = chat_reply(user_prompt, session_key=session_key)
-            st.markdown(reply)
-
-        st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+                    profile = get_candidate_profile()
+                    stats = f"{database.get_job_count()} jobs scouted, {database.get_application_count()} applications tracked"
+                    system_context = (
+                        "You are Career Copilot, a concise career assistant. "
+                        f"Candidate: {profile.get('name', 'the user')}. Current pipeline: {stats}. "
+                        "Answer with practical, specific advice. Never invent facts about the candidate."
+                    )
+                    try:
+                        reply = call_gemini(f"{system_context}\n\nUser: {prompt}", temperature=0.7)
+                    except Exception as exc:
+                        reply = f"⚠️ Model call failed: {exc}"
+                st.markdown(reply)
+            st.session_state.chat_messages.append({"role": "assistant", "content": reply})
