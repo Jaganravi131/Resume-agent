@@ -27,5 +27,11 @@ jobs:
       - name: Regression + offline unit suite (hermetic)
         run: python career_copilot/test_regressions.py
 
+      - name: Portfolio-upgrade suite (agent loop, chat, RAG memory, outcomes)
+        run: python career_copilot/test_portfolio_upgrade.py
+
       - name: Evals (9 checks, CI-gateable)
         run: python -m career_copilot.evals.run_evals
+
+      - name: Grader evals (adversarial interview-grading contracts)
+        run: python -m career_copilot.evals.run_grader_evals

@@ -1,6 +1,6 @@
 # Career Copilot — Comprehensive Project & System-Design Report
 
-> **Repository:** `Jaganravi131/Resume-agent` · **Branch:** `arena/01a0c85d-resume-agent` (from `main` @ `86261c5`)
+> **Repository:** `Jaganravi131/Resume-agent` · **Branch:** `portfolio-upgrade` (merged to `main` @ `07a6570`; history scrubbed of PII)
 > **Report date:** 2026-09-22 · **Code size:** ~5,900 lines across 17 Python modules + 2 docs
 > **Method:** full source read-through of every module, plus empirical verification (unit-test runs and bug reproductions — see §6).
 

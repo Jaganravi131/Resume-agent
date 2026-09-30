@@ -1,5 +1,10 @@
 # Career Copilot — AI-Powered Job Search & Application Agent
 
+[![CI](https://github.com/Jaganravi131/Resume-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaganravi131/Resume-agent/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED)
+
 An agentic multi-agent system built with [Google ADK](https://google.github.io/adk-docs/) that automates the heavy lifting of your job search: scouting jobs from live APIs and public job boards, scoring relevance with TF-IDF (plus an optional Gemini re-score), tailoring resumes with Gemini under an anti-hallucination quality gate, pre-filling application forms via browser automation — you always review and hit submit yourself — and sending daily digests to Telegram/WhatsApp/Email.
 
 > 🌐 **Interactive Web App & Showcase UI**: Launch live with `python -m streamlit run career_copilot/app.py` for interactive job scouting, ATS resume scoring, tailoring, and interview prep!
@@ -540,3 +545,9 @@ cp career_copilot/.env.example career_copilot/.env
 adk run career_copilot
 # Then type: "Search for Python Developer jobs and build my daily digest"
 ```
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE).
