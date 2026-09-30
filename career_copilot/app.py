@@ -323,63 +323,130 @@ with tab_scout:
 # TAB: ATS EVALUATOR
 # =============================================================================
 with tab_eval:
-    st.markdown('<p class="cc-section">ATS quality gate</p>', unsafe_allow_html=True)
-    st.caption("Same 5-axis rubric the pipeline applies before any resume is sent.")
+    from career_copilot.resume_optimizer import analyze_live, optimize_resume
 
-    up_col, hint_col = st.columns([2, 3])
-    with up_col:
-        uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"])
-    resume_text_input = ""
+    st.markdown('<p class="cc-section">Real-time resume check & optimizer</p>', unsafe_allow_html=True)
+    st.caption("Analysis updates instantly as you type — the same deterministic engine the pipeline gates on. "
+               "The optimizer is truthful: it only reformats and inserts clearly-marked placeholders, never invented skills.")
+
+    profile = get_candidate_profile()
+    jd_text = st.text_area("Optional — target job description (unlocks keyword-gap analysis)",
+                           height=110, key="eval_jd", placeholder="Paste the job description here…")
+
+    uploaded_file = st.file_uploader("Upload resume (PDF)", type=["pdf"], key="eval_pdf")
     if uploaded_file is not None:
         reader = PdfReader(uploaded_file)
-        resume_text_input = "\n".join(
-            page.extract_text() or "" for page in reader.pages
-        ).strip()
-        if resume_text_input:
-            st.success(f"Extracted {len(resume_text_input):,} characters.", icon="📄")
+        pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        if pdf_text:
+            st.success(f"Extracted {len(pdf_text):,} characters from the PDF.", icon="📄")
+            if not st.session_state.get("eval_resume_text"):
+                st.session_state["eval_resume_text"] = pdf_text
         else:
             st.error("Could not extract text from this PDF.")
 
-    resume_text = st.text_area("Resume text", value=resume_text_input, height=220,
-                               placeholder="Paste your resume here…")
+    resume_text = st.text_area(
+        "Resume text — edit and watch the analysis update",
+        value=st.session_state.get("eval_resume_text", ""),
+        height=220, key="eval_resume_text", placeholder="Paste your resume here…",
+    )
 
-    if st.button("🔬 Evaluate", type="primary"):
-        if not resume_text.strip():
-            st.error("Upload a PDF or paste resume text first.")
-        else:
-            profile = get_candidate_profile()
-            result = evaluate_resume_quality(resume_text, profile.get("name", "") or None)
-            score = int(result.get("score", 0))
+    live = st.checkbox("⚡ Live analysis (updates as you type)", value=True, key="eval_live")
+    analyze_now = st.button("🔬 Analyze now", key="eval_go") if not live else False
 
-            sc_col, meta_col = st.columns([1, 2])
-            with sc_col:
-                st.metric("ATS score", f"{score} / 100")
-                st.progress(score / 100)
-                if result.get("passed"):
-                    st.markdown(_pill("PASS ≥ 70", "green"), unsafe_allow_html=True)
+    analysis = None
+    if resume_text.strip() and (live or analyze_now):
+        analysis = analyze_live(resume_text, jd_text, profile.get("name") or None)
+
+    if analysis:
+        grade_kind = {"A": "green", "B": "green", "C": "yellow", "D": "red", "F": "red"}[analysis["grade"]]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("ATS score", f"{analysis['score']}/100")
+        c2.metric("Grade", analysis["grade"])
+        c3.metric("Words", analysis["words"])
+        bl = analysis["bullets"]
+        c4.metric("Bullets w/ numbers", f"{bl['with_numbers']}/{bl['count']}",
+                  help="Bullets containing a measurable number")
+        st.progress(min(1.0, analysis["score"] / 100))
+        st.markdown(
+            (_pill("QUALITY GATE PASS", "green") if analysis["passed"] else _pill("BELOW QUALITY GATE (<70)", "red"))
+            + " " + _pill(f"Grade {analysis['grade']}", grade_kind),
+            unsafe_allow_html=True,
+        )
+
+        sec_col, kw_col = st.columns(2)
+        with sec_col:
+            st.markdown("**Section coverage**")
+            for section, found in analysis["sections"].items():
+                st.markdown(f"{'✅' if found else '⬜'} {section}")
+        with kw_col:
+            gap = analysis["keyword_gap"]
+            st.markdown(f"**JD keyword coverage" + (f" — {gap['coverage']}%**" if gap["total"] else "**"))
+            if gap["total"]:
+                st.progress(min(1.0, gap["coverage"] / 100))
+                if gap["missing"]:
+                    st.caption("Missing: " + ", ".join(gap["missing"][:15]))
                 else:
-                    st.markdown(_pill("BELOW GATE (< 70)", "red"), unsafe_allow_html=True)
-            with meta_col:
-                breakdown = result.get("breakdown", {})
-                if breakdown:
-                    st.markdown("**Score breakdown**")
-                    bd = pd.DataFrame(
-                        [(k.replace("_", " ").title(), v) for k, v in breakdown.items()],
-                        columns=["Axis", "Points"],
-                    )
-                    st.dataframe(bd, width="stretch", hide_index=True)
-
-            issues = result.get("issues", [])
-            if issues:
-                with st.container(border=True):
-                    st.markdown("**⚠️ Issues detected**")
-                    for issue in issues:
-                        st.markdown(f"- {issue}")
+                    st.success("All top JD keywords present.", icon="✅")
             else:
-                st.success("Clean resume — no structural, contact, or metadata issues.", icon="✅")
+                st.caption("Paste a job description above to enable keyword-gap analysis.")
 
-            with st.expander("View sanitized text (what the ATS sees)"):
-                st.text(sanitize_resume_text(resume_text))
+        if analysis["suggestions"]:
+            with st.container(border=True):
+                st.markdown("**🧭 Top suggestions**")
+                for suggestion in analysis["suggestions"][:6]:
+                    st.markdown(f"- {suggestion}")
+
+        with st.expander("Full issue list & score breakdown"):
+            issues = analysis["issues"]
+            if issues:
+                for issue in issues:
+                    st.markdown(f"- ⚠️ {issue}")
+            else:
+                st.success("No structural issues detected.", icon="✅")
+            if analysis["breakdown"]:
+                bd = pd.DataFrame(
+                    [(k.replace("_", " ").title(), v) for k, v in analysis["breakdown"].items()],
+                    columns=["Axis", "Points"],
+                )
+                st.dataframe(bd, width="stretch", hide_index=True)
+
+        st.divider()
+        st.markdown("**⚡ Instant mechanical optimizer** — truthful fixes only "
+                    "(placeholders are bracketed; run the tailor tab for LLM rewriting).")
+        if st.button("Optimize my resume", type="primary", key="opt_go"):
+            optimized, changes = optimize_resume(
+                resume_text, jd_text,
+                name=profile.get("name", ""), email=profile.get("email", ""),
+                phone=profile.get("phone", ""),
+            )
+            after = analyze_live(optimized, jd_text, profile.get("name") or None)
+            d1, d2 = st.columns(2)
+            d1.metric("Score after optimization", f"{after['score']}/100",
+                      delta=after["score"] - analysis["score"])
+            d2.metric("Grade after", after["grade"])
+
+            st.markdown("**Changes applied:**")
+            for change in changes:
+                st.markdown(f"- {change}")
+
+            import difflib
+            diff = "\n".join(difflib.unified_diff(
+                resume_text.splitlines(), optimized.splitlines(),
+                fromfile="before", tofile="after", lineterm="",
+            ))
+            with st.expander("View unified diff"):
+                st.code(diff[:8000] if diff else "(no differences)", language="diff")
+
+            o1, o2 = st.columns(2)
+            with o1:
+                if st.button("📋 Load optimized text into the editor", key="opt_load"):
+                    st.session_state["eval_resume_text"] = optimized
+                    st.rerun()
+            with o2:
+                st.download_button("📥 Download optimized (.txt)", data=optimized,
+                                   file_name="resume_optimized.txt", mime="text/plain")
+    elif not resume_text.strip():
+        st.info("Upload a PDF or paste your resume text — analysis appears here instantly.", icon="👆")
 
 # =============================================================================
 # TAB: RESUME TAILOR

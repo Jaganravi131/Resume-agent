@@ -662,6 +662,89 @@ def test_record_application_writes_versions() -> bool:
     return True
 
 
+def test_resume_optimizer_live_analysis() -> bool:
+    """Enhancement: real-time resume analysis is rich, correct & deterministic."""
+    from career_copilot.resume_optimizer import _grade, _keyword_gap, analyze_live
+    strong = """JANE DOE
+Email: jane@example.com | Phone: +91-9876543210
+LinkedIn: linkedin.com/in/janedoe | GitHub: github.com/janedoe
+PROFESSIONAL SUMMARY
+Backend engineer with 1 year of FastAPI and PostgreSQL experience.
+Built and deployed 6 production services used by 3000 weekly users.
+Targeting backend roles on high-traffic Python teams.
+CORE SKILLS
+Languages: Python, SQL, JavaScript
+Frameworks: FastAPI, Django, React
+Tools: Docker, Git, PostgreSQL, Redis, Linux
+EXPERIENCE
+Acme Corp — Backend Intern (2024 to 2025)
+- built 12 REST APIs with fastapi serving 12000 requests per day for 5 clients
+- reduced p95 response latency by 30 percent across 8 critical endpoints
+- wrote 45 unit tests raising payment module coverage from 40 to 90 percent
+- automated nightly database backups with cron scripts saving 3 hours weekly
+PROJECTS
+Job Tracker (github.com/janedoe/jobtracker)
+- built a full-stack tracker with fastapi sqlite and htmx used by 120 students
+- achieved 99 percent uptime over 6 months by adding health checks and retries
+Campus Chatbot
+- trained an intent classifier on 4000 campus queries reaching 92 percent accuracy
+- deployed the bot with docker on a 1-core vps handling 60 messages per hour
+EDUCATION
+B.Tech Computer Science, Example University (2021 to 2025), CGPA 8.5
+Relevant coursework: Data Structures, Databases, Operating Systems, Networks
+"""
+    a1 = analyze_live(strong, "python fastapi developer rest apis docker sql")
+    a2 = analyze_live(strong, "python fastapi developer rest apis docker sql")
+    assert a1["score"] == a2["score"] and a1["sections"] == a2["sections"], "must be deterministic"
+    for section in ("Contact info", "Professional summary", "Core skills", "Experience", "Projects", "Education"):
+        assert a1["sections"][section], f"strong resume must show {section}"
+    assert a1["grade"] in ("A", "B"), f"well-formed resume grades A/B, got {a1['grade']}"
+    bl = a1["bullets"]
+    assert bl["count"] == 8 and bl["with_numbers"] == 8 and bl["with_action_verb"] == 8, bl
+    gap = a1["keyword_gap"]
+    assert gap["total"] > 0 and gap["coverage"] >= 60 and "python" in gap["present"]
+    assert _grade(95) == "A" and _grade(75) == "C" and _grade(30) == "F"
+    print("  [PASS] live resume analysis: sections, grade, bullet & keyword stats (deterministic)")
+    return True
+
+
+def test_resume_optimizer_truthful() -> bool:
+    """Enhancement: the mechanical optimizer fixes structure but NEVER invents
+    content — every non-placeholder token must come from the input/contact args."""
+    from career_copilot.resume_optimizer import optimize_resume
+    raw = """jane doe
+\u2022 built apis
+* handled 40 requests
+skills
+python fastapi
+experience
+intern at acme
+education
+bsc cs"""
+    optimized, changes = optimize_resume(raw, name="Jane Doe",
+                                         email="jane@example.com", phone="+91-9000000000")
+    assert "- built apis" in optimized and "- handled 40 requests" in optimized, \
+        "exotic bullets must normalize to '- '"
+    assert "CORE SKILLS" in optimized and "EXPERIENCE" in optimized, \
+        "headings must canonicalize to ALL-CAPS"
+    assert "[Add" in optimized, "missing sections must insert BRACKETED placeholders"
+    assert any("placeholder" in c.lower() for c in changes)
+
+    import re as _re
+    allowed = set(_re.findall(r"[a-z]+|\d+", raw.lower()))
+    allowed |= {"email", "phone", "jane", "doe", "example", "com", "91", "9000000000"}
+    for line in optimized.splitlines():
+        s = line.strip()
+        if not s or s.startswith("["):
+            continue  # bracketed placeholders are explicitly marked
+        if _re.fullmatch(r"[A-Z][A-Z &/()-]*", s):
+            continue  # canonical/inserted headings
+        for tok in _re.findall(r"[a-z]+|\d+", s.lower()):
+            assert tok in allowed, f"optimizer invented token {tok!r} in line {s!r}"
+    print("  [PASS] optimizer: structure fixed, zero invented tokens (truth contract)")
+    return True
+
+
 def test_training_data_exporter() -> bool:
     """training/export_training_data.py builds valid instruction-tuning pairs
     from the immutable version history (data prep only — no model downloads)."""
@@ -807,6 +890,8 @@ REGRESSION_TESTS = [
     test_legacy_db_migration,
     test_resume_version_history,
     test_record_application_writes_versions,
+    test_resume_optimizer_live_analysis,
+    test_resume_optimizer_truthful,
     test_training_data_exporter,
     test_board_api_ref_extraction,
     test_board_api_enrichment,
